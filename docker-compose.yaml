@@ -1,3 +1,18 @@
 version: '3'
 services:
+  be-pss-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.be
+    container_name: be-pss
+    env_file:
+      - .env
+    volumes:
+      - ./backend/:/tmp/work
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    expose:
+      - ${BACKEND_PORT}
+    tty: true
+
   
