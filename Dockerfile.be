@@ -1,6 +1,6 @@
 FROM python:3
 USER root
-WORKDIR /tmp/work
+WORKDIR /app
 
 RUN apt-get update
 RUN apt-get -y install locales && \

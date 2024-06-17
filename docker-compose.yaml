@@ -1,5 +1,23 @@
 version: '3'
 services:
+  fe-pss-app:
+    build:
+      context: ../fe_classification_for_PSS/
+      dockerfile: Dockerfile.fe
+    container_name: fe-pss
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+      WATCHPACK_POLLING: true
+    volumes:
+      - ../fe_classification_for_PSS/frontend/:/app
+    ports:
+      - "${FRONTEND_PORT}:${FRONTEND_PORT}" 
+    expose:
+      - ${FRONTEND_PORT}
+    tty: true
+
   be-pss-app:
     build:
       context: .
@@ -10,7 +28,7 @@ services:
     environment:
       TZ: ${TZ}
     volumes:
-      - ./backend/:/tmp/work
+      - ./backend/:/app
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
     expose:
@@ -21,7 +39,7 @@ services:
     platform: linux/amd64 
     build:
       context: .
-      dockerfile: ./Dockerfile.db
+      dockerfile: Dockerfile.db
     container_name: db-pss
     env_file:
       - .env
