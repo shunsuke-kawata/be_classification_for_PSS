@@ -7,6 +7,8 @@ services:
     container_name: be-pss
     env_file:
       - .env
+    environment:
+      TZ: ${TZ}
     volumes:
       - ./backend/:/tmp/work
     ports:
@@ -14,5 +16,27 @@ services:
     expose:
       - ${BACKEND_PORT}
     tty: true
-
+  
+  db-pss-app:
+    platform: linux/amd64 
+    build:
+      context: .
+      dockerfile: ./Dockerfile.db
+    container_name: db-pss
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ}
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./database/cnf/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./database/log/slow.log:/var/log/slow.log
+    ports:
+      - "${DATABASE_PORT}:${DATABASE_PORT}"
+    expose:
+      - ${DATABASE_PORT}
   

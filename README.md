@@ -35,4 +35,5 @@
 
 ## 起動方法
 1. ターミナルで```be_classification_for_PSS```まで移動する
+1. ```docker-compose build```(初回のみ)
 1. ```docker-compose up```
