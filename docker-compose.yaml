@@ -13,9 +13,9 @@ services:
     volumes:
       - ../fe_classification_for_PSS/frontend/:/app
     ports:
-      - "${FRONTEND_PORT}:${FRONTEND_PORT}" 
+      - "${FRONTEND_PORT}:${FRONTEND_PORT_IN_CONTAINER}" 
     expose:
-      - ${FRONTEND_PORT}
+      - ${FRONTEND_PORT_IN_CONTAINER}
     tty: true
 
   be-pss-app:
@@ -36,7 +36,6 @@ services:
     tty: true
   
   db-pss-app:
-    platform: linux/amd64 
     build:
       context: .
       dockerfile: Dockerfile.db
@@ -49,12 +48,13 @@ services:
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       TZ: ${TZ}
-    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
       - ./database/cnf/my.cnf:/etc/mysql/conf.d/my.cnf
       - ./database/log/slow.log:/var/log/slow.log
+      - ./database/data:/var/lib/mysql 
     ports:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:
       - ${DATABASE_PORT}
+    restart: always
   
