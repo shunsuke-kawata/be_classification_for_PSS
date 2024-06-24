@@ -59,5 +59,4 @@ services:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:
       - ${DATABASE_PORT}
-    restart: always
   
