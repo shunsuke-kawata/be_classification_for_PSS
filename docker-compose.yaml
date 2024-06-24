@@ -5,7 +5,7 @@ services:
     build:
       context: ../fe_classification_for_PSS
       dockerfile: Dockerfile.fe
-    container_name: fe-pss
+    container_name: fe-pss-app
     env_file:
       - .env
     environment:
@@ -23,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.be
-    container_name: be-pss
+    container_name: be-pss-app
     env_file:
       - .env
     environment:
@@ -35,13 +35,16 @@ services:
     expose:
       - ${BACKEND_PORT}
     tty: true
+
+    networks:
+      - pss-net
   
   #データベースコンテナ
   db-pss-app:
     build:
       context: .
       dockerfile: Dockerfile.db
-    container_name: db-pss
+    container_name: db-pss-app
     env_file:
       - .env
     environment:
@@ -59,4 +62,9 @@ services:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:
       - ${DATABASE_PORT}
+    networks:
+      - pss-net
   
+networks:
+  pss-net:
+    driver: bridge

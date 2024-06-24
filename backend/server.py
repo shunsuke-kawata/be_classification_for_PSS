@@ -3,10 +3,11 @@ from fastapi import FastAPI
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers.users import users_endpoint
+
 #CORSの設定
 origins = [
     "http://localhost",
-    "http://localhost:8080",
 ]
 
 app = FastAPI()
@@ -17,7 +18,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(users_endpoint)
 
 @app.get("/")
 def root():

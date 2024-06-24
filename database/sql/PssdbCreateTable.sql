@@ -7,7 +7,7 @@ USE `classification_db`;
 -- usersテーブルの作成
 CREATE TABLE users (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    username VARCHAR(255) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
     pass VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     authority INT NOT NULL,
