@@ -5,21 +5,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.users import users_endpoint
 from routers.projects import projects_endpoint
 
+
 #CORSの設定
 origins = [
-    "http://localhost",
+    f"http://localhost:{config.FRONTEND_PORT}",
+    f"http://localhost:{config.BACKEND_PORT}",
 ]
 
 #アップの作成
 app = FastAPI()
 
-#ミドルウェアの設定
+# CORSを回避するために追加（今回の肝）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,   # 追記により追加
+    allow_methods=["*"],      # 追記により追加
+    allow_headers=["*"]       # 追記により追加
 )
 
 #エンドポイントの追加

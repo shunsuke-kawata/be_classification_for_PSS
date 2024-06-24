@@ -17,7 +17,7 @@ def read_users():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to connect to database")
     
     #SQLの実行
-    query_text =f"SELECT id, name, pass, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users;"
+    query_text =f"SELECT id, name, password, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users;"
     result = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
@@ -40,7 +40,7 @@ def create_user(user:User):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="failed to validate")
     
     #SQLの実行
-    query_text =f"INSERT INTO users(name, pass, email, authority) VALUES ('{user.name}', '{user.password}', '{user.email}', {user.authority});"
+    query_text =f"INSERT INTO users(name, password, email, authority) VALUES ('{user.name}', '{user.password}', '{user.email}', {user.authority});"
     result = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)

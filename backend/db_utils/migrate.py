@@ -1,6 +1,6 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, TIMESTAMP, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, TIMESTAMP, ForeignKey,Boolean
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import sys
 sys.path.append('../')
@@ -17,7 +17,7 @@ class User(Base):
     name = Column(String(255), nullable=False)
     password = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False, unique=True)
-    authority = Column(Integer, nullable=False)
+    authority = Column(Boolean, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
 

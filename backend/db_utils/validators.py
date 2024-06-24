@@ -21,7 +21,7 @@ user_schema = {
         'nullable': False
     },
     'authority': {
-        'type': 'integer',
+        'type': 'boolean',
         'nullable': False,
     }
 }
@@ -44,6 +44,10 @@ project_schema = {
         'empty': True,
         'nullable': True,
     },
+    'owner_id': {
+        'type': 'integer',
+        'nullable': False,
+    }
     
 }
 
