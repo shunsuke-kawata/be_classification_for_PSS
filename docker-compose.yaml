@@ -1,15 +1,15 @@
 version: '3'
 services:
+  #フロントエンドコンテナ
   fe-pss-app:
     build:
-      context: ../fe_classification_for_PSS/
+      context: ../fe_classification_for_PSS
       dockerfile: Dockerfile.fe
     container_name: fe-pss
     env_file:
       - .env
     environment:
       TZ: ${TZ}
-      WATCHPACK_POLLING: true
     volumes:
       - ../fe_classification_for_PSS/frontend/:/app
     ports:
@@ -17,7 +17,8 @@ services:
     expose:
       - ${FRONTEND_PORT_IN_CONTAINER}
     tty: true
-
+  
+  #バックエンドコンテナ
   be-pss-app:
     build:
       context: .
@@ -35,6 +36,7 @@ services:
       - ${BACKEND_PORT}
     tty: true
   
+  #データベースコンテナ
   db-pss-app:
     build:
       context: .
@@ -52,6 +54,7 @@ services:
       - ./database/cnf/my.cnf:/etc/mysql/conf.d/my.cnf
       - ./database/log/slow.log:/var/log/slow.log
       - ./database/data:/var/lib/mysql 
+      - ./database/sql/:/tmp/work/sql/
     ports:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:

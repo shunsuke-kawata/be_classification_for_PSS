@@ -17,4 +17,5 @@ RUN pip install --upgrade setuptools
 
 RUN pip install -r requirements.txt
 
+#バックエンドの起動
 ENTRYPOINT ["python","server.py"]

@@ -1,5 +1,7 @@
 FROM mysql:8.0
 
+#my.cnfファイルの権限を落とす
 COPY ./database/cnf/my.cnf /etc/mysql/conf.d/my.cnf
 RUN chmod 644 /etc/mysql/conf.d/my.cnf
 
+WORKDIR /tmp/work/
