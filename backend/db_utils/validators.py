@@ -25,6 +25,28 @@ user_schema = {
         'nullable': False,
     }
 }
+project_schema = {
+    'name': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'password': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'description': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': True,
+        'nullable': True,
+    },
+    
+}
+
 
 #スキーマを選択してデータに対してバリデーションを行う
 def validate_data(target,type):
@@ -32,7 +54,11 @@ def validate_data(target,type):
     v = Validator()
     if(type=='user'):
         target_schema = user_schema
+    elif(type=='project'):
+        target_schema = project_schema
     else:
         target_schema = None
     
+    if(target_schema is None):
+        return False
     return v.validate(target_dict,target_schema)

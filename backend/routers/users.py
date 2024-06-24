@@ -6,13 +6,12 @@ from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import User
 
-#複数ユーザに関するCRUD
 #分割したエンドポイントの作成
 users_endpoint = APIRouter()
 
 #ユーザ一覧の取得
 @users_endpoint.get('/users')
-def get_users():
+def read_users():
     connect_session = create_connect_session()
     if connect_session is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to connect to database")
@@ -26,6 +25,7 @@ def get_users():
         return Response(status_code=status.HTTP_200_OK,content=json.dumps(user_list))
     else:
         return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,detail="failed to read database")
+    
 #ユーザの作成
 @users_endpoint.post('/users')
 def create_user(user:User):
@@ -47,7 +47,7 @@ def create_user(user:User):
     else:
         return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,detail="failed to create")
 
-#ユーザの更新
+#ユーザの更新(後から定義・変更)
 @users_endpoint.put('/users/{id}')
 def update_user(id:str):
     print(id)

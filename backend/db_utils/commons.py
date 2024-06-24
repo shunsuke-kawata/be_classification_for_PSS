@@ -6,9 +6,7 @@ import sys
 sys.path.append('../')
 from config import MYSQL_ROOT_PASSWORD,DATABASE_PORT,MYSQL_DATABASE
 
-CONNECT_STRING = f"mysql://root:{MYSQL_ROOT_PASSWORD}@db-pss-app:{DATABASE_PORT}/{MYSQL_DATABASE}"
-
-
+CONNECT_STRING = f"mysql://root:{MYSQL_ROOT_PASSWORD}@db-pss-app:{DATABASE_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
 
 #データベースに接続するためのセッションを作成する
 def create_connect_session():

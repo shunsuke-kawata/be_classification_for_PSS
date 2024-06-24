@@ -6,3 +6,8 @@ class User(BaseModel):
     email:str
     authority:int
     
+class Project(BaseModel):
+    name: str
+    password: str
+    description:str
+    
