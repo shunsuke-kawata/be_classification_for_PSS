@@ -1,7 +1,8 @@
 import json
 from fastapi import APIRouter, status,Response
 import sys
-sys.path.append('../')
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import User
@@ -18,7 +19,7 @@ def read_users():
     
     #SQLの実行
     query_text =f"SELECT id, name, password, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users;"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
         user_list = [dict(row) for row in rows]
@@ -41,9 +42,9 @@ def create_user(user:User):
     
     #SQLの実行
     query_text =f"INSERT INTO users(name, password, email, authority) VALUES ('{user.name}', '{user.password}', '{user.email}', {user.authority});"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,signup_user_id = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return Response(status_code=status.HTTP_201_CREATED,content=json.dumps({'user_id':signup_user_id}))
     else:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
 
@@ -69,7 +70,7 @@ def delete_user(user_id:str):
     
     #SQLの実行
     query_text =f"DELETE FROM users WHERE id='{id}';"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:

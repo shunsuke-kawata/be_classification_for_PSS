@@ -1,7 +1,8 @@
 import json
 from fastapi import APIRouter, status,Response
 import sys
-sys.path.append('../')
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import Project
@@ -18,7 +19,7 @@ def read_projects():
 
     #SQLの実行
     query_text =f"SELECT id, name, password, description, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
         project_list = [dict(row) for row in rows]
@@ -40,7 +41,7 @@ def read_project(project_id:str):
 
     #SQLの実行
     query_text =f"SELECT id, name, password, description, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects WHERE id='{id}';"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
         project_info = [dict(row) for row in rows][0]
@@ -63,9 +64,9 @@ def create_project(project:Project):
     
     #SQLの実行
     query_text =f"INSERT INTO projects(name, password, description,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{project.owner_id}');"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,new_project_id = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return Response(status_code=status.HTTP_201_CREATED,content=json.dumps({'project_id':new_project_id}))
     else:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
     
@@ -85,7 +86,7 @@ def delete_project(project_id:str):
     
     #SQLの実行
     query_text =f"DELETE FROM projects WHERE id='{id}';"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:

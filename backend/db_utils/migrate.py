@@ -3,7 +3,8 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import sys
-sys.path.append('../')
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from config import MYSQL_ROOT_PASSWORD,DATABASE_PORT,MYSQL_DATABASE
 
 CONNECT_STRING = f"mysql://root:{MYSQL_ROOT_PASSWORD}@db-pss-app:{DATABASE_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"

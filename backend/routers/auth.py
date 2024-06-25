@@ -1,7 +1,8 @@
 import json
 from fastapi import APIRouter, HTTPException, status,Response
 import sys
-sys.path.append('../')
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import LoginUser
@@ -25,7 +26,7 @@ def login(login_user:LoginUser):
     
     #SQLの実行
     query_text =f"SELECT id, name, password, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users WHERE (name='{login_user.name}' OR email='{login_user.email}') AND password='{login_user.password}';"
-    result = execute_query(session=connect_session,query_text=query_text)
+    result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
         login_info = [dict(row) for row in rows][0]

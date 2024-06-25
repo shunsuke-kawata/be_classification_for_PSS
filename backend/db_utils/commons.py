@@ -24,9 +24,12 @@ def execute_query(session,query_text):
         query = text(query_text)
         result = session.execute(query)
         session.commit()
-        return result
+        
+        # リソース作成時に使用する
+        created_id = session.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        return result,created_id
     except Exception as e:
         print(e)
         session.rollback()
-        return None
+        return None,None
 
