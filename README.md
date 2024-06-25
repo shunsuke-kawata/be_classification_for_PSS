@@ -5,12 +5,14 @@
 - Docker Desktopのインストール
 - gitにssh接続するためのキーペアの作成
 
-## 使用技術
+## 開発環境
 |  |  |
 | -- | -- |
+| OS | MacOS(Apple M2) | 
 | フロントエンド | Next,TypeScript | 
 | バックエンド | FastAPI,Python |
 | データベース | MySQL,SQL |
+| ストレージサービス | S3を想定 |
 
 ## 環境構築
 1. ターミナルで適当なフォルダで```mkdir classification_for_PSS```(任意の名前でOK)
@@ -76,3 +78,4 @@
 - コンテナ情報一覧表示 ```docker ps```
 - コンテナ内に入る ```docker exec -it {コンテナID} bash```
 - コンテナに対してコンテナ環境からコードを実行する　```docker exec -it {コンテナID} {実行するコマンド}```
+- 起動するコンテナを選択して実行 ```docker-compose up {コンテナ名}```

@@ -10,6 +10,7 @@ from db_utils.models import LoginUser
 #ログイン操作
 auth_endpoint = APIRouter()
 
+#ログイン処理
 @auth_endpoint.post('/auth/login')
 def login(login_user:LoginUser):
     connect_session = create_connect_session()

@@ -25,6 +25,28 @@ def read_projects():
         return Response(status_code=status.HTTP_200_OK,content=json.dumps(project_list, ensure_ascii=False))
     else:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
+
+#単一のプロジェクトを取得
+@projects_endpoint.get('/projects/{project_id}')
+def read_project(project_id:str):
+    connect_session = create_connect_session()
+    if connect_session is None:
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to connect database"}))
+    try:
+        id = int(project_id)
+    except Exception as e:
+        print(e)
+        return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"invalid project_id"}))
+
+    #SQLの実行
+    query_text =f"SELECT id, name, password, description, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects WHERE id='{id}';"
+    result = execute_query(session=connect_session,query_text=query_text)
+    if result is not None:
+        rows = result.mappings().all()
+        project_info = [dict(row) for row in rows][0]
+        return Response(status_code=status.HTTP_200_OK,content=json.dumps(project_info, ensure_ascii=False))
+    else:
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
     
 #プロジェクトの作成
 @projects_endpoint.post('/projects')
@@ -48,21 +70,21 @@ def create_project(project:Project):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
     
 #プロジェクトの削除
-@projects_endpoint.delete('/projects/{id}')
-def delete_project(id:str):
+@projects_endpoint.delete('/projects/{project_id}')
+def delete_project(project_id:str):
     connect_session = create_connect_session()
     #データベース接続確認
     if connect_session is None:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to connect database"}))
     
     try:
-        project_id = int(id)
+        id = int(project_id)
     except Exception as e:
         print(e)
         return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"invalid project_id"}))
     
     #SQLの実行
-    query_text =f"DELETE FROM projects WHERE id='{project_id}';"
+    query_text =f"DELETE FROM projects WHERE id='{id}';"
     result = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)

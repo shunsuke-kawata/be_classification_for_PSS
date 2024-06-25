@@ -11,6 +11,9 @@ class Project(BaseModel):
     password: str
     description:str
     owner_id:int
+class ProjectMembership(BaseModel):
+    project_id:int
+    user_id:int
     
 class LoginUser(BaseModel):
     name: str

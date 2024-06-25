@@ -69,6 +69,16 @@ project_schema = {
         'nullable': False,
     }
 }
+project_membership_schema = {
+    'user_id': {
+        'type': 'integer',
+        'nullable': False,
+    },
+    'project_id': {
+        'type': 'integer',
+        'nullable': False,
+    }
+}
 
 
 #スキーマを選択してデータに対してバリデーションを行う
@@ -81,6 +91,8 @@ def validate_data(target,type):
         target_schema = project_schema
     elif(type=='login_user'):
         target_schema= login_user_schema
+    elif(type=='project_membership'):
+        target_schema= project_membership_schema
     else:
         target_schema = None
     
