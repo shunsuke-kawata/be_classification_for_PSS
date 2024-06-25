@@ -25,6 +25,26 @@ user_schema = {
         'nullable': False,
     }
 }
+login_user_schema = {
+    'name': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'password': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'email': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False
+    }
+}
 project_schema = {
     'name': {
         'type': 'string',
@@ -48,7 +68,6 @@ project_schema = {
         'type': 'integer',
         'nullable': False,
     }
-    
 }
 
 
@@ -60,6 +79,8 @@ def validate_data(target,type):
         target_schema = user_schema
     elif(type=='project'):
         target_schema = project_schema
+    elif(type=='login_user'):
+        target_schema= login_user_schema
     else:
         target_schema = None
     

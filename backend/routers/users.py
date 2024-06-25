@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, HTTPException, status,Response
+from fastapi import APIRouter, status,Response
 import sys
 sys.path.append('../')
 from db_utils.commons import create_connect_session,execute_query
@@ -14,7 +14,7 @@ users_endpoint = APIRouter()
 def read_users():
     connect_session = create_connect_session()
     if connect_session is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to connect to database")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to connect database"}))
     
     #SQLの実行
     query_text =f"SELECT id, name, password, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users;"
@@ -24,7 +24,7 @@ def read_users():
         user_list = [dict(row) for row in rows]
         return Response(status_code=status.HTTP_200_OK,content=json.dumps(user_list))
     else:
-        return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,detail="failed to read database")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
     
 #ユーザの作成
 @users_endpoint.post('/users')
@@ -33,11 +33,11 @@ def create_user(user:User):
     
     #データベース接続確認
     if connect_session is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to connect to database")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to connect database"}))
     
     #バリデーションの実行
     if not(validate_data(user, 'user')):
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="failed to validate")
+        return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"failed to validate"}))
     
     #SQLの実行
     query_text =f"INSERT INTO users(name, password, email, authority) VALUES ('{user.name}', '{user.password}', '{user.email}', {user.authority});"
@@ -45,7 +45,7 @@ def create_user(user:User):
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:
-        return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,detail="failed to create")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
 
 #ユーザの更新(後から定義・変更)
 @users_endpoint.put('/users/{id}')
@@ -59,13 +59,13 @@ def delete_user(id:str):
     connect_session = create_connect_session()
     #データベース接続確認
     if connect_session is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="failed to connect to database")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to connect database"}))
     
     try:
         user_id = int(id)
     except Exception as e:
         print(e)
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="invalid user_id")
+        return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"invalid user_id"}))
     
     #SQLの実行
     query_text =f"DELETE FROM users WHERE id='{user_id}';"
@@ -73,4 +73,4 @@ def delete_user(id:str):
     if not(result is None):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:
-        return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,detail="failed to delete")
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to delete"}))

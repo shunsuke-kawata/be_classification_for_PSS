@@ -14,7 +14,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False,unique=True)
     password = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False, unique=True)
     authority = Column(Boolean, nullable=False)
@@ -25,7 +25,7 @@ class Project(Base):
     __tablename__ = "projects"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False,unique=True)
     password = Column(String(255), nullable=False)
     description = Column(Text)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)

@@ -4,6 +4,7 @@ import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from routers.users import users_endpoint
 from routers.projects import projects_endpoint
+from routers.auth import auth_endpoint
 
 
 #CORSの設定
@@ -27,6 +28,7 @@ app.add_middleware(
 #エンドポイントの追加
 app.include_router(users_endpoint)
 app.include_router(projects_endpoint)
+app.include_router(auth_endpoint)
 
 @app.get("/")
 def root():
