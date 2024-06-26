@@ -12,13 +12,16 @@ projects_endpoint = APIRouter()
 
 #ユーザ一覧の取得
 @projects_endpoint.get('/projects')
-def read_projects():
+def read_projects(user_id=None):
     connect_session = create_connect_session()
     if connect_session is None:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to connect database"}))
 
     #SQLの実行
-    query_text =f"SELECT id, name, password, description, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
+    if(user_id is None):
+        query_text =f"SELECT id, name, description,owner_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
+    else:
+        query_text = f"SELECT projects.id, projects.name, projects.description, projects.owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at,CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined FROM projects LEFT JOIN project_memberships ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};"
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
