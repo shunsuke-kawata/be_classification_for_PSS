@@ -19,3 +19,9 @@ class LoginUser(BaseModel):
     name: str
     email:str
     password: str
+    
+class JoinUser(BaseModel):
+    user_id:int
+    project_id:int
+    project_password:str
+    

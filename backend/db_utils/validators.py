@@ -79,7 +79,22 @@ project_membership_schema = {
         'nullable': False,
     }
 }
-
+join_user_schema = {
+    'user_id': {
+        'type': 'integer',
+        'nullable': False,
+    },
+    'project_id': {
+        'type': 'integer',
+        'nullable': False,
+    },
+    'project_password': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+}
 
 #スキーマを選択してデータに対してバリデーションを行う
 def validate_data(target,type):
@@ -93,6 +108,8 @@ def validate_data(target,type):
         target_schema= login_user_schema
     elif(type=='project_membership'):
         target_schema= project_membership_schema
+    elif(type=='join_user'):
+        target_schema= join_user_schema
     else:
         target_schema = None
     
