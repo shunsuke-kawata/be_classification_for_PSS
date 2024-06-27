@@ -58,6 +58,7 @@ services:
       - ./database/log/slow.log:/var/log/slow.log
       - ./database/data:/var/lib/mysql 
       - ./database/sql/:/tmp/work/sql/
+      - ./database/out/:/tmp/work/out/
     ports:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:

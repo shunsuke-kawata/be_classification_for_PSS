@@ -5,7 +5,9 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
-from db_utils.models import Project
+from db_utils.models import NewProject
+from utils.utils import create_origin_image_folder
+from config import ALTER_STORAGE_SERVICE
 
 #分割したエンドポイントの作成
 projects_endpoint = APIRouter()
@@ -19,9 +21,9 @@ def read_projects(user_id=None):
 
     #SQLの実行
     if(user_id is None):
-        query_text =f"SELECT id, name, description,owner_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
+        query_text =f"SELECT id, name, description,images_folder_path,object_images_folder_path,owner_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
     else:
-        query_text = f"SELECT projects.id, projects.name, projects.description, projects.owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at,CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined FROM projects LEFT JOIN project_memberships ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};"
+        query_text = f"SELECT projects.id, projects.name, projects.description, projects.images_folder_path,projects.object_images_folder_path,projects.owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at,CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined FROM projects LEFT JOIN project_memberships ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};"
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
@@ -54,7 +56,7 @@ def read_project(project_id:str):
     
 #プロジェクトの作成
 @projects_endpoint.post('/projects')
-def create_project(project:Project):
+def create_project(project:NewProject):
     connect_session = create_connect_session()
     
     #データベース接続確認
@@ -65,8 +67,11 @@ def create_project(project:Project):
     if not(validate_data(project, 'project')):
         return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"failed to validate"}))
     
+    images_folder_path = create_origin_image_folder(ALTER_STORAGE_SERVICE)
+    object_images_folder_path = create_origin_image_folder(ALTER_STORAGE_SERVICE)
+    
     #SQLの実行
-    query_text =f"INSERT INTO projects(name, password, description,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{project.owner_id}');"
+    query_text =f"INSERT INTO projects(name, password, description,images_folder_path,object_images_folder_path,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{images_folder_path}','{object_images_folder_path}','{project.owner_id}');"
     result,new_project_id = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return Response(status_code=status.HTTP_201_CREATED,content=json.dumps({'project_id':new_project_id}))

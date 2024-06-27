@@ -5,7 +5,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
-from db_utils.models import User
+from db_utils.models import NewUser
 
 #分割したエンドポイントの作成
 users_endpoint = APIRouter()
@@ -29,7 +29,7 @@ def read_users():
     
 #ユーザの作成
 @users_endpoint.post('/users')
-def create_user(user:User):
+def create_user(user:NewUser):
     connect_session = create_connect_session()
     
     #データベース接続確認

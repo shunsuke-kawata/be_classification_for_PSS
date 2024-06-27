@@ -1,17 +1,17 @@
 from pydantic import BaseModel
 
-class User(BaseModel):
+class NewUser(BaseModel):
     name: str
     email:str
     password: str
     authority:bool
     
-class Project(BaseModel):
+class NewProject(BaseModel):
     name: str
     password: str
     description:str
     owner_id:int
-class ProjectMembership(BaseModel):
+class NewProjectMembership(BaseModel):
     project_id:int
     user_id:int
     

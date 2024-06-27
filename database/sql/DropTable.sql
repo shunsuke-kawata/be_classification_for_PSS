@@ -1,5 +1,5 @@
 -- データベースの使用
-USE `classification_db`;
+USE `pss_db`;
 
 -- テーブルをすべて削除
 DROP TABLE IF EXISTS project_memberships;

@@ -35,7 +35,7 @@
     BACKEND_PORT=8002
     DATABASE_PORT=3306
     MYSQL_ROOT_PASSWORD=root
-    MYSQL_DATABASE=classification_db
+    MYSQL_DATABASE=pss_db
     MYSQL_USER=user
     MYSQL_PASSWORD=user
     TZ=Asia/Tokyo
@@ -56,7 +56,7 @@
 
 1. データベースコンテナから実行する方法
     1. データベースコンテナに入る
-    1. ```mysql -u {MYSQL_USER} -p < sql/PssdbCreateTable.sql```
+    1. ```mysql -u {MYSQL_USER} -p < sql/CreateTable.sql```
     1. パスワードを入力する画面になるのでパスワード(```{MYSQL_PASSWORD}```)を入力
 
 ## データベースの削除
@@ -64,8 +64,9 @@
 
 1. ローカルの```database/data/```の中身をフォルダごと削除する(データベースを永続化
 するためのvolumeディレクトリ)
+1. コンテナを再度起動する
 1. データベースコンテナに入る
-1. ```mysql -u {MYSQL_USER} -p < sql/PssdbDropTable.sql```
+1. ```mysql -u {MYSQL_USER} -p < sql/DropTable.sql```
 
 ## データベース構造
 ```database/sql/PssdbCreateTable.sql```または```backend/db_utils/migrate.py```のコードに記載

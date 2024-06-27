@@ -5,7 +5,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
-from db_utils.models import ProjectMembership
+from db_utils.models import NewProjectMembership
 
 #分割したエンドポイントの作成
 project_memberships_endpoint = APIRouter()
@@ -52,7 +52,7 @@ def read_project_memberships(user_id=None, project_id=None):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to read database"}))
 
 @project_memberships_endpoint.post('/project_memberships')
-def create_project(project_membership:ProjectMembership):
+def create_project(project_membership:NewProjectMembership):
     connect_session = create_connect_session()
     
     #データベース接続確認
