@@ -71,6 +71,11 @@
 ## データベース構造
 ```database/sql/PssdbCreateTable.sql```または```backend/db_utils/migrate.py```のコードに記載
 
+## バックエンドAPIのdocsを更新する
+1. ```http://localhost:{BACTEND_PORT}/system/docs/update```を叩く
+1. ```backend/index.html```が作成されるので```docs```フォルダに移動する
+1. pushする
+
 ## dockerコマンド
 - イメージビルド ```docker-compose build```
 - キャッシュを使用せずにイメージビルド　```docker-compose build --no-cache```
