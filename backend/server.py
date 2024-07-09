@@ -8,6 +8,10 @@ from routers.project_memberships import project_memberships_endpoint
 from routers.auth import auth_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+
 
 #CORSの設定
 origins = [
@@ -42,7 +46,7 @@ def root():
 @app.get("/system/docs/update")
 def update_docs_html():
     try:
-        with open(f"./docs_html/pss_backend_api_docs.html", "w") as fd:
+        with open(f"index.html", "w") as fd:
             print(HTML_TEMPLATE % json.dumps(app.openapi()), file=fd)
         return Response(status_code=status.HTTP_200_OK,content=json.dumps({"message":"succeeded to create api docs"}))
     except Exception as e:
