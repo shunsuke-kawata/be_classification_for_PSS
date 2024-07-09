@@ -3,6 +3,7 @@ from fastapi import APIRouter, status,Response
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+from db_utils.migrate import migration_engine,Base
 
 #html出力のテンプレート
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -35,3 +36,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 #分割したエンドポイントの作成
 #デバックなどのための関数をおくエンドポイント
 systems_endpoint = APIRouter()
+
+@systems_endpoint.get('/system/db/migrate')
+def migrate_db():
+    try:
+        Base.metadata.create_all(bind=migration_engine)
+        return Response(status_code=status.HTTP_200_OK,content=json.dumps({"message":"succeeded to migrate database"}))
+    except Exception as e:
+        print(e)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to migrate database"}))

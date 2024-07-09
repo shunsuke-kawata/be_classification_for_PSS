@@ -50,9 +50,8 @@
 - マイグレーション設定を自動で行っていないため、初回ビルドやデータ消去時にはマイグレーションが必要になる
 - バックエンドコンテナかデータベースコンテナから実行できる
 
-1. バックエンドコンテナから実行する方法
-    1. バックエンドコンテナに入る
-    1. ```python3 db_utils/migrate.py```
+1. APIエンドポイントから実行する方法
+    1. ```http://localhost:{BACTEND_PORT}/system/db/migrate```を叩く
 
 1. データベースコンテナから実行する方法
     1. データベースコンテナに入る
@@ -69,12 +68,14 @@
 1. ```mysql -u {MYSQL_USER} -p < sql/DropTable.sql```
 
 ## データベース構造
-```database/sql/PssdbCreateTable.sql```または```backend/db_utils/migrate.py```のコードに記載
+- ER図に記載
+- ```database/sql/CreateTable.sql```または```backend/db_utils/migrate.py```のコードに記載
 
 ## バックエンドAPIのdocsを更新する
 1. ```http://localhost:{BACTEND_PORT}/system/docs/update```を叩く
 1. ```backend/index.html```が作成されるので```docs```フォルダに移動する
 1. pushする
+1. github Pagesでdocsフォルダを公開するように設定する
 
 ## dockerコマンド
 - イメージビルド ```docker-compose build```

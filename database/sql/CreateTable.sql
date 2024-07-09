@@ -52,8 +52,10 @@ CREATE TABLE object_images (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(255) NOT NULL,
     path VARCHAR(255) NOT NULL,
-    origin_image_id INT NOT NULL,
-    FOREIGN KEY (origin_image_id) REFERENCES images(id) ON DELETE CASCADE,
+    original_image_id INT NOT NULL,
+    project_id INT NOT NULL,
+    FOREIGN KEY (original_image_id) REFERENCES images(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -64,6 +66,7 @@ CREATE TABLE object_groups (
     name VARCHAR(255) NOT NULL,
     user_id INT NOT NULL,
     project_id INT NOT NULL,
+    is_noise_group TINYINT(1) NOT NULL,
     is_trash_group TINYINT(1) NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -83,6 +86,7 @@ CREATE TABLE object_group_relationships(
 
 -- logsテーブルの作成
 CREATE TABLE logs (
+    id INT PRIMARY KEY AUTO_INCREMENT,
     to_group_id INT NOT NULL,
     from_group_id INT NOT NULL,
     object_image_id INT NOT NULL,

@@ -38,7 +38,6 @@ services:
     expose:
       - ${BACKEND_PORT}
     tty: true
-
     networks:
       - pss-net
   
