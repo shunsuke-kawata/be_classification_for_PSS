@@ -79,7 +79,7 @@
 
 - このリポジトリのAPIのdocsは以下のURLに記載
 
-    ```https://shunsuke-kawata.github.io/be_classification_for_PSS/```
+    https://shunsuke-kawata.github.io/be_classification_for_PSS/
 
 
 
