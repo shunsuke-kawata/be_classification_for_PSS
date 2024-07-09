@@ -17,6 +17,9 @@ services:
     expose:
       - ${FRONTEND_PORT_IN_CONTAINER}
     tty: true
+    
+    networks:
+      - pss-net
   
   #バックエンドコンテナ
   be-pss-app:
@@ -65,7 +68,7 @@ services:
       - ${DATABASE_PORT}
     networks:
       - pss-net
-  
+
 networks:
   pss-net:
     driver: bridge

@@ -27,12 +27,15 @@ def login(login_user:LoginUser):
     #SQLの実行
     query_text =f"SELECT id, name, password, email, authority, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM users WHERE (name='{login_user.name}' OR email='{login_user.email}') AND password='{login_user.password}';"
     result,_ = execute_query(session=connect_session,query_text=query_text)
-    if result is not None:
-        rows = result.mappings().all()
-        login_info = [dict(row) for row in rows][0]
-        return Response(status_code=status.HTTP_200_OK,content=json.dumps(login_info))
-    else:
+    if result is  None:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to login"}))
+    
+    rows = result.mappings().all()
+    login_info_list = [dict(row) for row in rows]
+    if(len(login_info_list)!=1):
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to login"}))
+    
+    return Response(status_code=status.HTTP_200_OK,content=json.dumps(login_info_list[0]))
     
 #ログイン処理
 @auth_endpoint.post('/auth/join/{project_id}')
@@ -67,10 +70,9 @@ def join(project_id:str,join_user:JoinUser):
     project_pass_info_list = [dict(row) for row in rows]
     
     if(len(project_pass_info_list)==0):
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"incorrect password"}))
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to login"}))
     
     project_pass_info = project_pass_info_list[0]
-    print(project_pass_info)
     
     #SQLの実行
     query_text =f"INSERT INTO project_memberships(user_id, project_id) VALUES ('{join_user.user_id}','{project_pass_info['id']}');"

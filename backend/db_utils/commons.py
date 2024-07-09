@@ -19,6 +19,7 @@ def create_connect_session():
         print(e)
         return None
 
+#SQL文字列からクエリを実行する
 def execute_query(session,query_text):
     try:
         query = text(query_text)
@@ -32,4 +33,3 @@ def execute_query(session,query_text):
         print(e)
         session.rollback()
         return None,None
-

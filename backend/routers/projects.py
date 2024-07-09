@@ -6,7 +6,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import NewProject
-from utils.utils import create_origin_image_folder
 from config import ALTER_STORAGE_SERVICE
 
 #分割したエンドポイントの作成
@@ -67,8 +66,8 @@ def create_project(project:NewProject):
     if not(validate_data(project, 'project')):
         return Response(status_code=status.HTTP_400_BAD_REQUEST,content=json.dumps({"message":"failed to validate"}))
     
-    images_folder_path = create_origin_image_folder(ALTER_STORAGE_SERVICE)
-    object_images_folder_path = create_origin_image_folder(ALTER_STORAGE_SERVICE)
+    images_folder_path = ""
+    object_images_folder_path = ""
     
     #SQLの実行
     query_text =f"INSERT INTO projects(name, password, description,images_folder_path,object_images_folder_path,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{images_folder_path}','{object_images_folder_path}','{project.owner_id}');"

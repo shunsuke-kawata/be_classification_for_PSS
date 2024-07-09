@@ -1,11 +1,13 @@
 import config
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from routers.users import users_endpoint
 from routers.projects import projects_endpoint
 from routers.project_memberships import project_memberships_endpoint
 from routers.auth import auth_endpoint
+import json
+from routers.systems import HTML_TEMPLATE
 
 #CORSの設定
 origins = [
@@ -35,6 +37,19 @@ app.include_router(auth_endpoint)
 @app.get("/")
 def root():
     return {"root": "be-pss"}
+
+#appのインポートが必要になるためルートに記述
+@app.get("/system/docs/update")
+def update_docs_html():
+    try:
+        with open(f"./docs_html/pss_backend_api_docs.html", "w") as fd:
+            print(HTML_TEMPLATE % json.dumps(app.openapi()), file=fd)
+        return Response(status_code=status.HTTP_200_OK,content=json.dumps({"message":"succeeded to create api docs"}))
+    except Exception as e:
+        print(e)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create api docs"}))
+        
+        
 
 #アプリの起動
 if __name__ == "__main__":

@@ -1,0 +1,71 @@
+TableName
+users
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	auto_increment
+name	varchar(255)	NO	UNI	NULL	
+password	varchar(255)	NO		NULL	
+email	varchar(255)	NO	UNI	NULL	
+authority	tinyint(1)	NO		NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+projects
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	auto_increment
+name	varchar(255)	NO	UNI	NULL	
+password	varchar(255)	NO		NULL	
+description	text	YES		NULL	
+images_folder_path	varchar(255)	NO		NULL	
+object_images_folder_path	varchar(255)	NO		NULL	
+owner_id	int	NO	MUL	NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+project_memberships
+Field	Type	Null	Key	Default	Extra
+user_id	int	NO	MUL	NULL	
+project_id	int	NO	MUL	NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+images
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	auto_increment
+name	varchar(255)	NO		NULL	
+path	varchar(255)	NO		NULL	
+project_id	int	NO	MUL	NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+object_images
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	auto_increment
+name	varchar(255)	NO		NULL	
+path	varchar(255)	NO		NULL	
+origin_image_id	int	NO	MUL	NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+object_groups
+Field	Type	Null	Key	Default	Extra
+id	int	NO	PRI	NULL	auto_increment
+name	varchar(255)	NO		NULL	
+user_id	int	NO	MUL	NULL	
+project_id	int	NO	MUL	NULL	
+is_trash_group	tinyint(1)	NO		NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP
+
+TableName
+logs
+Field	Type	Null	Key	Default	Extra
+to_group_id	int	NO	MUL	NULL	
+from_group_id	int	NO	MUL	NULL	
+object_image_id	int	NO	MUL	NULL	
+created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
+updated_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED on update CURRENT_TIMESTAMP

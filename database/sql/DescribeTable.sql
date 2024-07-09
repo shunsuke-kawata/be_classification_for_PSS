@@ -1,30 +1,30 @@
 -- データベースの使用
 USE `pss_db`;
 
--- Table: users
+-- テーブル名: users
 SELECT 'users' AS TableName;
 DESC users;
 
--- Table: projects
+-- テーブル名: projects
 SELECT 'projects' AS TableName;
 DESC projects;
 
--- Table: project_memberships
+-- テーブル名: project_memberships
 SELECT 'project_memberships' AS TableName;
 DESC project_memberships;
 
--- Table: images
+-- テーブル名: images
 SELECT 'images' AS TableName;
 DESC images;
 
--- Table: object_images
+-- テーブル名: object_images
 SELECT 'object_images' AS TableName;
 DESC object_images;
 
--- Table: object_groups
+-- テーブル名: object_groups
 SELECT 'object_groups' AS TableName;
 DESC object_groups;
 
--- Table: logs
+-- テーブル名: logs
 SELECT 'logs' AS TableName;
 DESC logs;
