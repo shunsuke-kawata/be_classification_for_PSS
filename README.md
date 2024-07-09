@@ -77,6 +77,12 @@
 1. pushする
 1. github Pagesでdocsフォルダを公開するように設定する
 
+- このリポジトリのAPIのdocsは以下のURLに記載
+
+    ```https://shunsuke-kawata.github.io/be_classification_for_PSS/```
+
+
+
 ## dockerコマンド
 - イメージビルド ```docker-compose build```
 - キャッシュを使用せずにイメージビルド　```docker-compose build --no-cache```
