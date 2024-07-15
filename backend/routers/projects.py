@@ -63,7 +63,6 @@ def read_project(project_id:str):
     
 #プロジェクトの作成
 @projects_endpoint.post('/projects',tags=["projects"],description="新規プロジェクトの作成",responses={
-    200: {"description": "OK", "model": CustomResponseModel},
     201: {"description": "Created", "model": CustomResponseModel},
     400: {"description": "Bad Request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}

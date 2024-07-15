@@ -34,7 +34,6 @@ def read_users():
     
 #ユーザの作成
 @users_endpoint.post('/users',tags=["users"],description="新規ユーザの作成",responses={
-    200: {"description": "OK", "model": CustomResponseModel},
     201: {"description": "Created", "model": CustomResponseModel},
     400: {"description": "Bad Request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}

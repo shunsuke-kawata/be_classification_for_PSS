@@ -12,10 +12,9 @@ from db_utils.models import CustomResponseModel, NewProjectMembership
 #分割したエンドポイントの作成
 project_memberships_endpoint = APIRouter()
 
-#ユーザとプロジェクトの紐付けの作成
+#ユーザとプロジェクトの紐付けの取得
 @project_memberships_endpoint.get('/project_memberships',tags=["project_memberships"],description="ユーザとプロジェクト間の関係一覧を取得",responses={
     200: {"description": "OK", "model": CustomResponseModel},
-    201: {"description": "Created", "model": CustomResponseModel},
     400: {"description": "Bad Request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}
 })
@@ -57,8 +56,8 @@ def read_project_memberships(user_id=None, project_id=None):
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to read project_memberships", "data":None})
 
+#ユーザとプロジェクトの紐付けを作成
 @project_memberships_endpoint.post('/project_memberships',tags=["project_memberships"],description="ユーザとプロジェクト間の紐付けを行う",responses={
-    200: {"description": "OK", "model": CustomResponseModel},
     201: {"description": "Created", "model": CustomResponseModel},
     400: {"description": "Bad Request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}
