@@ -1,5 +1,7 @@
+from typing import Union
 from pydantic import BaseModel
 
+#レスポンスのタイプ
 class NewUser(BaseModel):
     name: str
     email:str
@@ -11,6 +13,7 @@ class NewProject(BaseModel):
     password: str
     description:str
     owner_id:int
+    
 class NewProjectMembership(BaseModel):
     project_id:int
     user_id:int
@@ -24,4 +27,10 @@ class JoinUser(BaseModel):
     user_id:int
     project_id:int
     project_password:str
+    
+
+#swaggerにレスポンスを出力する
+class CustomResponseModel(BaseModel):
+    message: str
+    data: Union[dict, None]
     

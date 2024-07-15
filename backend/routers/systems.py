@@ -1,8 +1,11 @@
 import json
-from fastapi import APIRouter, status,Response
+from fastapi import APIRouter, status
 import sys
 import os
+from fastapi.responses import JSONResponse
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+from db_utils.models import CustomResponseModel
 from db_utils.migrate import migration_engine,Base
 
 #html出力のテンプレート
@@ -37,11 +40,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 #デバックなどのための関数をおくエンドポイント
 systems_endpoint = APIRouter()
 
-@systems_endpoint.get('/system/db/migrate',tags=["systems"],description="データベースのマイグレーション処理を行う")
+@systems_endpoint.get('/system/db/migrate',tags=["systems"],description="データベースのマイグレーション処理を行う",responses={
+    200: {"description": "OK", "model": CustomResponseModel},
+    500: {"description": "Internal Server Error", "model": CustomResponseModel}
+})
 def migrate_db():
     try:
         Base.metadata.create_all(bind=migration_engine)
-        return Response(status_code=status.HTTP_200_OK,content=json.dumps({"message":"succeeded to migrate database"}))
+        return JSONResponse(status_code=status.HTTP_200_OK,content={"message":"succeeded to migrate database","data":None})
     except Exception as e:
         print(e)
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to migrate database"}))
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to migrate database", "data":None})
