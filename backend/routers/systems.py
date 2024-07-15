@@ -37,7 +37,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 #デバックなどのための関数をおくエンドポイント
 systems_endpoint = APIRouter()
 
-@systems_endpoint.get('/system/db/migrate')
+@systems_endpoint.get('/system/db/migrate',tags=["systems"],description="データベースのマイグレーション処理を行う")
 def migrate_db():
     try:
         Base.metadata.create_all(bind=migration_engine)

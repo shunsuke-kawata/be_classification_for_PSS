@@ -11,7 +11,7 @@ from db_utils.models import NewProjectMembership
 project_memberships_endpoint = APIRouter()
 
 #ユーザとプロジェクトの紐付けの作成
-@project_memberships_endpoint.get('/project_memberships')
+@project_memberships_endpoint.get('/project_memberships',tags=["project_memberships"],description="ユーザとプロジェクト間の関係一覧を取得")
 def read_project_memberships(user_id=None, project_id=None):
     connect_session = create_connect_session()
     if connect_session is None:
@@ -51,8 +51,8 @@ def read_project_memberships(user_id=None, project_id=None):
     else:
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=json.dumps({"message":"failed to read database"}))
 
-@project_memberships_endpoint.post('/project_memberships')
-def create_project(project_membership:NewProjectMembership):
+@project_memberships_endpoint.post('/project_memberships',tags=["project_memberships"],description="ユーザとプロジェクト間の紐付けを行う")
+def create_project_membership(project_membership:NewProjectMembership):
     connect_session = create_connect_session()
     
     #データベース接続確認

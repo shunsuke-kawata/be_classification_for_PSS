@@ -12,7 +12,7 @@ from db_utils.models import LoginUser,JoinUser
 auth_endpoint = APIRouter()
 
 #ログイン処理
-@auth_endpoint.post('/auth/login')
+@auth_endpoint.post('/auth/login',tags=["auth"],description="ログイン処理を行う")
 def login(login_user:LoginUser):
     connect_session = create_connect_session()
     
@@ -38,7 +38,7 @@ def login(login_user:LoginUser):
     return Response(status_code=status.HTTP_200_OK,content=json.dumps(login_info_list[0]))
     
 #ログイン処理
-@auth_endpoint.post('/auth/join/{project_id}')
+@auth_endpoint.post('/auth/join/{project_id}',tags=["auth"],description="プロジェクト追加処理を行う")
 def join(project_id:str,join_user:JoinUser):
     connect_session = create_connect_session()
     

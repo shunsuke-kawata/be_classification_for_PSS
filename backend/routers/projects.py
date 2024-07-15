@@ -6,13 +6,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import NewProject
-from config import ALTER_STORAGE_SERVICE
 
 #分割したエンドポイントの作成
 projects_endpoint = APIRouter()
 
-#ユーザ一覧の取得
-@projects_endpoint.get('/projects')
+#プロジェクト一覧の取得
+@projects_endpoint.get('/projects',tags=["projects"],description="プロジェクト一覧の取得")
 def read_projects(user_id=None):
     connect_session = create_connect_session()
     if connect_session is None:
@@ -32,7 +31,7 @@ def read_projects(user_id=None):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
 
 #単一のプロジェクトを取得
-@projects_endpoint.get('/projects/{project_id}')
+@projects_endpoint.get('/projects/{project_id}',tags=["projects"],description="単一プロジェクトの情報を取得")
 def read_project(project_id:str):
     connect_session = create_connect_session()
     if connect_session is None:
@@ -54,7 +53,7 @@ def read_project(project_id:str):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
     
 #プロジェクトの作成
-@projects_endpoint.post('/projects')
+@projects_endpoint.post('/projects',tags=["projects"],description="新規プロジェクトの作成")
 def create_project(project:NewProject):
     connect_session = create_connect_session()
     
@@ -78,7 +77,7 @@ def create_project(project:NewProject):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
     
 #プロジェクトの削除
-@projects_endpoint.delete('/projects/{project_id}')
+@projects_endpoint.delete('/projects/{project_id}',tags=["projects"],description="プロジェクトの削除")
 def delete_project(project_id:str):
     connect_session = create_connect_session()
     #データベース接続確認

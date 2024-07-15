@@ -11,7 +11,7 @@ from db_utils.models import NewUser
 users_endpoint = APIRouter()
 
 #ユーザ一覧の取得
-@users_endpoint.get('/users')
+@users_endpoint.get('/users',tags=["users"],description="ユーザ一覧の取得")
 def read_users():
     connect_session = create_connect_session()
     if connect_session is None:
@@ -28,7 +28,7 @@ def read_users():
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to read database"}))
     
 #ユーザの作成
-@users_endpoint.post('/users')
+@users_endpoint.post('/users',tags=["users"],description="新規ユーザの作成")
 def create_user(user:NewUser):
     connect_session = create_connect_session()
     
@@ -49,13 +49,13 @@ def create_user(user:NewUser):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content=json.dumps({"message":"failed to create"}))
 
 #ユーザの更新(後から定義・変更)
-@users_endpoint.put('/users/{user_id}')
+@users_endpoint.put('/users/{user_id}',tags=["users"],description="ユーザ情報の変更")
 def update_user(user_id:str):
     print(user_id)
     return {'update-user':'put'}
 
 #ユーザの削除
-@users_endpoint.delete('/users/{user_id}')
+@users_endpoint.delete('/users/{user_id}',tags=["users"],description="ユーザの削除")
 def delete_user(user_id:str):
     connect_session = create_connect_session()
     #データベース接続確認

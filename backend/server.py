@@ -20,8 +20,31 @@ origins = [
     f"http://localhost:{config.BACKEND_PORT}",
 ]
 
+openapi_tags_metadata = [
+    {
+        "name":"users",
+        "description":"ユーザ関連処理"
+    },
+    {
+        "name":"projects",
+        "description":"プロジェクト関連処理"
+    },
+    {
+        "name":"project_memberships",
+        "description":"ユーザ・プロジェクト間の連携処理"
+    },
+    {
+        "name":"auth",
+        "description":"ユーザ認証関連処理"
+    },
+    {
+        "name":"systems",
+        "description":"開発者用の処理　ユーザは使用しない"
+    } 
+]
+
 #アップインスタンスの作成
-app = FastAPI()
+app = FastAPI(title='be_classification_for_PSS',description='classification_for_PSSのバックエンドAPIエンドポイント一覧',openapi_tags=openapi_tags_metadata)
 
 # CORSを回避するために追加
 app.add_middleware(
@@ -40,12 +63,12 @@ app.include_router(auth_endpoint)
 app.include_router(systems_endpoint)
 
 #バックエンドエンドポイントルート
-@app.get("/")
+@app.get("/",tags=["systems"],description="特に使用しない")
 def root():
     return {"root": "be-pss"}
 
 #appのインポートが必要になるためルートに記述
-@app.get("/system/docs/update")
+@app.get("/system/docs/update",tags=["systems"],description="デプロイするdocsを更新する")
 def update_docs_html():
     try:
         with open(f"index.html", "w") as fd:
