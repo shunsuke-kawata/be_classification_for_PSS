@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      TZ: ${TZ}
+      TZ: Asia/Tokyo
     volumes:
       - ../fe_classification_for_PSS/frontend/:/app
     ports:
@@ -30,7 +30,7 @@ services:
     env_file:
       - .env
     environment:
-      TZ: ${TZ}
+      TZ: Asia/Tokyo
     volumes:
       - ./backend/:/app
     ports:
@@ -54,13 +54,14 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      TZ: ${TZ}
+      TZ: Asia/Tokyo
     volumes:
       - ./database/cnf/my.cnf:/etc/mysql/conf.d/my.cnf
       - ./database/log/slow.log:/var/log/slow.log
       - ./database/data:/var/lib/mysql 
       - ./database/sql/:/tmp/work/sql/
       - ./database/out/:/tmp/work/out/
+      - ./database/sql/init.d:/docker-entrypoint-initdb.d 
     ports:
       - "${DATABASE_PORT}:${DATABASE_PORT}"
     expose:
