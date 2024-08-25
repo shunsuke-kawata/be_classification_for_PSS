@@ -96,20 +96,42 @@ join_user_schema = {
     },
 }
 
+#スキーマ定義
+image_schema = {
+    'name': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'path': {
+        'type': 'string',
+        'maxlength': 255,
+        'empty': False,
+        'nullable': False,
+    },
+    'project_id': {
+        'type': 'integer',
+        'nullable': False
+    }
+}
+
 #スキーマを選択してデータに対してバリデーションを行う
-def validate_data(target,type):
+def validate_data(target,target_type):
     target_dict = target.dict()
     v = Validator()
-    if(type=='user'):
+    if(target_type=='user'):
         target_schema = user_schema
-    elif(type=='project'):
+    elif(target_type=='project'):
         target_schema = project_schema
-    elif(type=='login_user'):
+    elif(target_type=='login_user'):
         target_schema= login_user_schema
-    elif(type=='project_membership'):
+    elif(target_type=='project_membership'):
         target_schema= project_membership_schema
-    elif(type=='join_user'):
+    elif(target_type=='join_user'):
         target_schema= join_user_schema
+    elif(target_type=='image'):
+        target_schema= image_schema
     else:
         target_schema = None
     

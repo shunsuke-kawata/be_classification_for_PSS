@@ -9,12 +9,12 @@ from routers.projects import projects_endpoint
 from routers.project_memberships import project_memberships_endpoint
 from routers.auth import auth_endpoint
 from routers.systems import systems_endpoint
+from routers.images import images_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-
 
 #CORSの設定
 origins = [
@@ -63,6 +63,7 @@ app.include_router(projects_endpoint)
 app.include_router(project_memberships_endpoint)
 app.include_router(auth_endpoint)
 app.include_router(systems_endpoint)
+app.include_router(images_endpoint)
 
 #バックエンドエンドポイントルート
 @app.get("/",tags=["systems"],description="特に使用しない")

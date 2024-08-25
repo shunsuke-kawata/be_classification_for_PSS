@@ -83,8 +83,8 @@ def create_project(project:NewProject):
     images_folder_path = create_random_string(12)
     object_images_folder_path = create_random_string(12)
     
-    is_successed_images = create_s3_prefix(root_folder_path+'/'+images_folder_path+'/')
-    is_successed_objects = create_s3_prefix(root_folder_path+'/'+object_images_folder_path+'/')
+    is_successed_images = create_s3_prefix(f'{root_folder_path}/{images_folder_path}/')
+    is_successed_objects = create_s3_prefix(f'{root_folder_path}/{object_images_folder_path}/')
     
     if not(is_successed_images and is_successed_objects):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to create s3 prefix", "data":None})

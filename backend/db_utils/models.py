@@ -1,4 +1,5 @@
 from typing import Union
+from fastapi import File, UploadFile
 from pydantic import BaseModel
 
 #レスポンスのタイプ
@@ -17,6 +18,11 @@ class NewProject(BaseModel):
 class NewProjectMembership(BaseModel):
     project_id:int
     user_id:int
+
+class NewImage(BaseModel):
+    name:str
+    project_id:int
+    image_file:UploadFile
     
 class LoginUser(BaseModel):
     name: str
@@ -28,7 +34,6 @@ class JoinUser(BaseModel):
     project_id:int
     project_password:str
     
-
 #swaggerにレスポンスを出力する
 class CustomResponseModel(BaseModel):
     message: str
