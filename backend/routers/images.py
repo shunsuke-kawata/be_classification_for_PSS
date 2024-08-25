@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewImage
-from utils.utils import create_s3_prefix
+from utils.utils import create_s3_prefix,image2png
 
 #分割したエンドポイントの作成
 images_endpoint = APIRouter()
@@ -27,25 +27,30 @@ async def create_image(project_id: str,
     #データベース接続確認
     if connect_session is None:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to connect to database", "data":None})
-    
-    # #バリデーションの実行
-    # if not(validate_data(image, 'image')):
-    #     return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
-    
+        
     #バリデーションの実行
     if not(project_id==str(project_id_form)):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
     
     query_text =f"SELECT root_folder_path,images_folder_path,object_images_folder_path FROM projects WHERE id ={project_id};"    
-    result,_ = execute_query(session=connect_session,query_text=query_text)
-    if (result is not None):
-        rows = result.mappings().all()
+    project_result,_ = execute_query(session=connect_session,query_text=query_text)
+    if (project_result is not None):
+        rows = project_result.mappings().all()
         project_info = [dict(row) for row in rows][0]
         root_folder_path = project_info['root_folder_path']
         images_folder_path = project_info['images_folder_path']
-        prefix_path = f'{root_folder_path}/{images_folder_path}/{name}'
+        basename_without_ext = os.path.splitext(os.path.basename(name))[0]
+        prefix_path = f'{root_folder_path}/{images_folder_path}/{basename_without_ext}.png'
         image_bytes = await image_file.read()
-        is_successed_objects = create_s3_prefix(prefix_str=prefix_path,byte_data=image_bytes)
-    
-    #SQLの実行
-    # query_text =f"INSERT INTO project_memberships(user_id, project_id) VALUES ('{project_membership.user_id}','{project_membership.project_id}');"
+        image_png_data = image2png(image_bytes)
+        is_successed_image = create_s3_prefix(prefix_str=prefix_path,byte_data=image_png_data)
+        
+        if(is_successed_image):
+            query_text =f"INSERT INTO images(name,path,project_id) VALUES('{basename_without_ext}.png','{prefix_path}','{project_id}');"    
+            result,new_image_id = execute_query(session=connect_session,query_text=query_text)
+            if (result is not None):
+                return JSONResponse(status_code=status.HTTP_201_CREATED,content={"message": "succeeded to create project", "data":{'image_id':new_image_id}})
+            else:
+                return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to create image data", "data":None})    
+        else:
+            return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to upload image", "data":None})

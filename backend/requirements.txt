@@ -7,3 +7,4 @@ mysqlclient
 cerberus
 boto3
 python-multipart
+Pillow
