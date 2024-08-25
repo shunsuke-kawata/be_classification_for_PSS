@@ -8,6 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProject
+from utils.utils import create_random_string,create_s3_prefix
 
 #分割したエンドポイントの作成
 projects_endpoint = APIRouter()
@@ -24,9 +25,9 @@ def read_projects(user_id=None):
 
     #SQLの実行
     if(user_id is None):
-        query_text =f"SELECT id, name, description,images_folder_path,object_images_folder_path,owner_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
+        query_text =f"SELECT id, name, description,root_folder_path,images_folder_path,object_images_folder_path,owner_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects;"
     else:
-        query_text = f"SELECT projects.id, projects.name, projects.description, projects.images_folder_path,projects.object_images_folder_path,projects.owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at,CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined FROM projects LEFT JOIN project_memberships ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};"
+        query_text = f"SELECT projects.id, projects.name, projects.description, projects.root_folder_path,projects.images_folder_path,projects.object_images_folder_path,projects.owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at,CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined FROM projects LEFT JOIN project_memberships ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};"
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
@@ -52,7 +53,7 @@ def read_project(project_id:str):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
 
     #SQLの実行
-    query_text =f"SELECT id, name, password, description, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects WHERE id='{id}';"
+    query_text =f"SELECT id, name, description, root_folder_path,images_folder_path,object_images_folder_path,owner_id,DATE_FORMAT(projects.created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(projects.updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM projects WHERE id='{id}';"
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
@@ -78,11 +79,18 @@ def create_project(project:NewProject):
     if not(validate_data(project, 'project')):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
     
-    images_folder_path = ""
-    object_images_folder_path = ""
+    root_folder_path = create_random_string(12)
+    images_folder_path = create_random_string(12)
+    object_images_folder_path = create_random_string(12)
     
+    is_successed_images = create_s3_prefix(root_folder_path+'/'+images_folder_path+'/')
+    is_successed_objects = create_s3_prefix(root_folder_path+'/'+object_images_folder_path+'/')
+    
+    if not(is_successed_images and is_successed_objects):
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to create s3 prefix", "data":None})
+        
     #SQLの実行
-    query_text =f"INSERT INTO projects(name, password, description,images_folder_path,object_images_folder_path,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{images_folder_path}','{object_images_folder_path}','{project.owner_id}');"
+    query_text =f"INSERT INTO projects(name, password, description,root_folder_path,images_folder_path,object_images_folder_path,owner_id) VALUES ('{project.name}', '{project.password}','{project.description}','{root_folder_path}','{images_folder_path}','{object_images_folder_path}','{project.owner_id}');"
     result,new_project_id = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return JSONResponse(status_code=status.HTTP_201_CREATED,content={"message": "succeeded to create project", "data":{'project_id':new_project_id}})

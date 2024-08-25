@@ -18,6 +18,7 @@ CREATE TABLE projects (
     name VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
     description TEXT,
+    root_folder_path VARCHAR(255) NOT NULL,
     images_folder_path VARCHAR(255) NOT NULL,
     object_images_folder_path VARCHAR(255) NOT NULL,
     owner_id INT NOT NULL,

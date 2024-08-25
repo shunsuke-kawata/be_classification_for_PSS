@@ -1,4 +1,3 @@
-version: '3'
 services:
   #フロントエンドコンテナ
   fe-pss-app:
