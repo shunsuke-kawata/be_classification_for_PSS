@@ -1,6 +1,9 @@
 import os
 from dotenv import load_dotenv
 
+# .envファイルの内容を読み込む
+load_dotenv()
+
 FRONTEND_PORT=os.environ['FRONTEND_PORT']
 BACKEND_PORT =os.environ['BACKEND_PORT']
 DATABASE_PORT=os.environ['DATABASE_PORT']
@@ -11,6 +14,4 @@ MYSQL_PASSWORD=os.environ['MYSQL_PASSWORD']
 MYSQL_HOST=os.environ['MYSQL_HOST']
 DATABASE_PORT_IN_CONTAINER=os.environ['DATABASE_PORT_IN_CONTAINER']
 ADMINISTRATOR_CODE=os.environ['ADMINISTRATOR_CODE']
-ACCESS_KEY_ID=os.environ['ACCESS_KEY_ID']
-SECRET_ACCESS_KEY=os.environ['SECRET_ACCESS_KEY']
-S3_BUCKET_NAME=os.environ['S3_BUCKET_NAME']
+OPENAI_API_KEY=os.environ['OPENAI_API_KEY']
