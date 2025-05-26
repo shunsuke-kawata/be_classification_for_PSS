@@ -4,9 +4,9 @@ from sqlalchemy.orm import sessionmaker
 
 import sys
 sys.path.append('../')
-from config import MYSQL_ROOT_PASSWORD,DATABASE_PORT,MYSQL_DATABASE
+from config import MYSQL_ROOT_PASSWORD,DATABASE_PORT,MYSQL_DATABASE,MYSQL_HOST,DATABASE_PORT_IN_CONTAINER
 
-CONNECT_STRING = f"mysql://root:{MYSQL_ROOT_PASSWORD}@db-pss-app:{DATABASE_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
+CONNECT_STRING = f"mysql://root:{MYSQL_ROOT_PASSWORD}@{MYSQL_HOST}:{DATABASE_PORT_IN_CONTAINER}/{MYSQL_DATABASE}?charset=utf8mb4"
 
 #データベースに接続するためのセッションを作成する
 def create_connect_session():
@@ -16,7 +16,6 @@ def create_connect_session():
         session = Session()
         return session
     except Exception as e:
-        print(e)
         return None
 
 #SQL文字列からクエリを実行する

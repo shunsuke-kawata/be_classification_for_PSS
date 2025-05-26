@@ -36,7 +36,7 @@ PSSについての詳細は https://pss.nexsjp.com/ にて確認する。この�
     FRONTEND_PORT=5002
     FRONTEND_PORT_IN_CONTAINER=3000
     BACKEND_PORT=8002
-    DATABASE_PORT=3306
+    DATABASE_PORT=3307
     MYSQL_ROOT_PASSWORD=root
     MYSQL_DATABASE=pss_db
     MYSQL_USER=user
