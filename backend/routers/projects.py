@@ -10,6 +10,10 @@ from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProject
 from utils.utils import generate_uuid
 
+from pathlib import Path
+from config import DEFAULT_IMAGE_PATH
+
+
 projects_endpoint = APIRouter()
 
 # プロジェクト一覧の取得
@@ -93,8 +97,12 @@ def create_project(project: NewProject):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "failed to validate", "data": None})
 
     root_folder_id = generate_uuid()
-    original_images_folder_path = "imgs"
-
+    original_images_folder_path = generate_uuid()
+    
+    os.makedirs(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path, exist_ok=True)
+    if not os.path.exists(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path):
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to create original images folder", "data": None})
+    
     query_text = f"""
         INSERT INTO projects(name, password, description, root_folder_id, original_images_folder_path, owner_id)
         VALUES ('{project.name}', '{project.password}', '{project.description}', '{root_folder_id}', '{original_images_folder_path}', {project.owner_id});

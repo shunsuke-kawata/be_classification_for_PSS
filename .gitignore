@@ -6,6 +6,7 @@
 **/log/
 **/data/
 **/out/
+**/images
 
 /backend/index.html
 **/test/

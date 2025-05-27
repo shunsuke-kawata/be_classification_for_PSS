@@ -1,5 +1,5 @@
 from fastapi.responses import JSONResponse
-import config
+from config import FRONTEND_PORT,BACKEND_PORT,DEFAULT_IMAGE_PATH
 from fastapi import FastAPI, status
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,16 +10,18 @@ from routers.project_memberships import project_memberships_endpoint
 from routers.auth import auth_endpoint
 from routers.systems import systems_endpoint
 from routers.images import images_endpoint
+from routers.test import test_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+from pathlib import Path
 
 #CORSの設定
 origins = [
-    f"http://localhost:{config.FRONTEND_PORT}",
-    f"http://localhost:{config.BACKEND_PORT}",
+    f"http://localhost:{FRONTEND_PORT}",
+    f"http://localhost:{BACKEND_PORT}",
 ]
 
 openapi_tags_metadata = [
@@ -64,6 +66,7 @@ app.include_router(project_memberships_endpoint)
 app.include_router(auth_endpoint)
 app.include_router(systems_endpoint)
 app.include_router(images_endpoint)
+app.include_router(test_endpoint)
 
 #バックエンドエンドポイントルート
 @app.get("/",tags=["systems"],description="特に使用しない")
@@ -86,4 +89,7 @@ def update_docs_html():
         
 #アプリの起動
 if __name__ == "__main__":
-    uvicorn.run("server:app",host="0.0.0.0",port=int(config.BACKEND_PORT),reload=True)
+    
+    images_path = Path(DEFAULT_IMAGE_PATH)
+    os.makedirs(images_path, exist_ok=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=int(BACKEND_PORT), reload=True)

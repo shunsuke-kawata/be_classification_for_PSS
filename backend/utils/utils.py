@@ -11,14 +11,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 def generate_uuid():
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).rstrip(b'=').decode('utf-8')
 
-#画像ファイルをpngに変換する
+# 画像ファイルを最高画質でPNGに変換する
 def image2png(byte_image):
-        # バイトデータを PIL イメージに変換
+    # バイトデータを PIL イメージに変換
     image = Image.open(BytesIO(byte_image))
 
-    # イメージを PNG に変換して保持
+    # PNGとして最高画質（圧縮率最小 = compress_level=0）で保存
     png_image_io = BytesIO()
-    image.save(png_image_io, format='PNG')
+    image.save(png_image_io, format='PNG', optimize=True, compress_level=0)
     png_image_io.seek(0)
 
     return png_image_io.getvalue()

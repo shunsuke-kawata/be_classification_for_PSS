@@ -32,21 +32,6 @@ CREATE TABLE projects (
 );
 
 -- ========================
--- foldersテーブル（root_folder_id を追加）
--- ========================
-CREATE TABLE folders (
-    id VARCHAR(22) PRIMARY KEY, -- ChromaDBのID
-    project_id INT NOT NULL,
-    root_folder_id VARCHAR(22) NOT NULL, -- その階層構造のルートID
-    parent_folder_id VARCHAR(22), -- NULL ならルートフォルダ
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_folder_id) REFERENCES folders(id) ON DELETE CASCADE
-);
-
--- ========================
 -- project_membershipsテーブル（多対多）
 -- ========================
 CREATE TABLE project_memberships (
@@ -59,7 +44,6 @@ CREATE TABLE project_memberships (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
-
 -- ========================
 -- imagesテーブル
 -- ========================
@@ -67,23 +51,40 @@ CREATE TABLE images (
     id VARCHAR(22) PRIMARY KEY, -- ChromaDBのID
     name VARCHAR(255) NOT NULL,
     project_id INT NOT NULL,
-    folder_id VARCHAR(22), -- 画像が属するフォルダ（任意）
+    uploaded_user_id INT NOT NULL,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
+    FOREIGN KEY (uploaded_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- ========================
--- インデックス（検索性能向上）
--- ========================
-CREATE INDEX idx_folders_project_id ON folders(project_id);
-CREATE INDEX idx_folders_parent_folder_id ON folders(parent_folder_id);
-CREATE INDEX idx_folders_root_folder_id ON folders(root_folder_id);
-CREATE INDEX idx_images_project_id ON images(project_id);
-CREATE INDEX idx_images_folder_id ON images(folder_id);
+-- -- ========================
+-- -- foldersテーブル（root_folder_id を追加）
+-- -- ========================
+-- CREATE TABLE folders (
+--     id VARCHAR(22) PRIMARY KEY, -- ChromaDBのID
+--     project_id INT NOT NULL,
+--     root_folder_id VARCHAR(22) NOT NULL, -- その階層構造のルートID
+--     parent_folder_id VARCHAR(22), -- NULL ならルートフォルダ
+--     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+--     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+--     FOREIGN KEY (parent_folder_id) REFERENCES folders(id) ON DELETE CASCADE
+-- );
+
+
+
+-- -- ========================
+-- -- インデックス（検索性能向上）
+-- -- ========================
+-- CREATE INDEX idx_folders_project_id ON folders(project_id);
+-- CREATE INDEX idx_folders_parent_folder_id ON folders(parent_folder_id);
+-- CREATE INDEX idx_folders_root_folder_id ON folders(root_folder_id);
+-- CREATE INDEX idx_images_project_id ON images(project_id);
+-- CREATE INDEX idx_images_folder_id ON images(folder_id);
 
 -- ========================
 -- 初期データの挿入
