@@ -15,7 +15,6 @@ import json
 from routers.systems import HTML_TEMPLATE
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from pathlib import Path
 
 #CORSの設定
@@ -53,12 +52,11 @@ app = FastAPI(title='be_classification_for_PSS',description='classification_for_
 # CORSを回避するために追加
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,  
-    allow_methods=["*"],      
-    allow_headers=["*"]       
+    allow_origins=["*"],  # フロントエンドのURLを指定（* で全許可も可）
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
 #分割したエンドポイントの追加
 app.include_router(users_endpoint)
 app.include_router(projects_endpoint)

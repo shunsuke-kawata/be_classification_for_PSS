@@ -43,7 +43,7 @@ def login(login_user:LoginUser):
     login_user_info = login_info_list[0]
     return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to login", "data":login_user_info})
     
-#ログイン処理
+#プロジェクトログイン処理
 @auth_endpoint.post('/auth/join/{project_id}',tags=["auth"],description="プロジェクト追加処理を行う",responses={
     200: {"description": "OK", "model": CustomResponseModel},
     400: {"description": "Bad Request", "model": CustomResponseModel},

@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 from fastapi import APIRouter, status
 import sys
@@ -28,17 +29,15 @@ def read_projects(user_id=None):
 
     if user_id is None:
         query_text = """
-            SELECT id, name, description, root_folder_id, original_images_folder_path,
-                   owner_id, DATE_FORMAT(created_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as created_at,
-                   DATE_FORMAT(updated_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as updated_at
+            SELECT id, name, description, init_clustering_state, root_folder_id, original_images_folder_path, owner_id
             FROM projects;
         """
     else:
         query_text = f"""
             SELECT projects.id, projects.name, projects.description, projects.root_folder_id,
-                   projects.original_images_folder_path, projects.owner_id,
-                   DATE_FORMAT(projects.created_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as created_at,
-                   DATE_FORMAT(projects.updated_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as updated_at,
+                   projects.original_images_folder_path, projects.init_clustering_state, projects.owner_id,
+                   projects.created_at,
+                   projects.updated_at,
                    CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
             FROM projects
             LEFT JOIN project_memberships
@@ -48,7 +47,16 @@ def read_projects(user_id=None):
     result, _ = execute_query(session=connect_session, query_text=query_text)
     if result is not None:
         rows = result.mappings().all()
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "succeeded to read projects", "data": [dict(row) for row in rows]})
+        res_data = []
+        for row in rows:
+            row_dict = dict(row)
+            # すべての datetime を文字列に変換
+            for k, v in row_dict.items():
+                if isinstance(v, datetime):
+                    row_dict[k] = v.isoformat()
+            res_data.append(row_dict)
+        print(res_data)
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "succeeded to read projects", "data": res_data})
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to read projects", "data": None})
 
@@ -69,18 +77,25 @@ def read_project(project_id: str):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "invalid project_id", "data": None})
 
     query_text = f"""
-        SELECT id, name, description, root_folder_id, original_images_folder_path, owner_id,
-               DATE_FORMAT(created_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as created_at,
-               DATE_FORMAT(updated_at, '%%Y-%%m-%%dT%%H:%%i:%%sZ') as updated_at
+        SELECT id, name, description, init_clustering_state, root_folder_id, original_images_folder_path, owner_id, created_at, updated_at
         FROM projects WHERE id = {id};
     """
 
     result, _ = execute_query(session=connect_session, query_text=query_text)
-    if result:
+    if result is not None:
         rows = result.mappings().all()
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "succeeded to read project", "data": dict(rows[0])})
+        res_data = []
+        for row in rows:
+            row_dict = dict(row)
+            # すべての datetime を文字列に変換
+            for k, v in row_dict.items():
+                if isinstance(v, datetime):
+                    row_dict[k] = v.isoformat()
+            res_data.append(row_dict)
+        
+        return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to read projects", "data": res_data[0]})
     else:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to read project", "data": None})
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND,content={"message": "failedß to read projects", "data": None})
 
 # プロジェクトの作成
 @projects_endpoint.post('/projects', tags=["projects"], description="新規プロジェクトの作成", responses={

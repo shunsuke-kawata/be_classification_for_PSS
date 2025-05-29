@@ -9,9 +9,11 @@ services:
       - .env
     environment:
       TZ: Asia/Tokyo
+      DEFAULT_IMAGE_PATH: ${DEFAULT_IMAGE_PATH}
     volumes:
       - ../fe_classification_for_PSS/frontend/:/app
-      - frontend-node_modules:/app/node_modules
+      - /app/node_modules
+
     ports:
       - "${FRONTEND_PORT}:${FRONTEND_PORT_IN_CONTAINER}" 
     expose:
@@ -73,7 +75,3 @@ networks:
   pss-net:
     driver: bridge
   
-
-volumes:
-  frontend-node_modules:
-    driver: local

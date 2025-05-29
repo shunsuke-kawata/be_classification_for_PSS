@@ -9,4 +9,5 @@
 **/images
 
 /backend/index.html
+/backend/chroma_db/
 **/test/

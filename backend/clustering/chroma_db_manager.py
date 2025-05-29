@@ -2,11 +2,15 @@ import base64
 import json
 import os
 import re
+import sys
 import uuid
 import chromadb
-from embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
-from embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
-from utils import Utils
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
+from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
+from .utils import Utils
 class ChromaDBManager:
     
     class ChromaDocument:
@@ -40,8 +44,8 @@ class ChromaDBManager:
             return self._path
 
         @property
-        def document(self)->"ChromaDBManager.ChromaDocument":
-            return ChromaDBManager.ChromaDocument(self._document)
+        def document(self)->str:
+            return self._document
 
         @property
         def is_success(self) -> bool:
