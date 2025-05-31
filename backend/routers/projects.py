@@ -34,8 +34,8 @@ def read_projects(user_id=None):
         """
     else:
         query_text = f"""
-            SELECT projects.id, projects.name, projects.description, projects.root_folder_id,
-                   projects.original_images_folder_path, projects.init_clustering_state, projects.owner_id,
+            SELECT projects.id, projects.name, projects.description, 
+                   projects.original_images_folder_path, projects.owner_id,
                    projects.created_at,
                    projects.updated_at,
                    CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
@@ -77,7 +77,7 @@ def read_project(project_id: str):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "invalid project_id", "data": None})
 
     query_text = f"""
-        SELECT id, name, description, init_clustering_state, root_folder_id, original_images_folder_path, owner_id, created_at, updated_at
+        SELECT id, name, description,original_images_folder_path, owner_id, created_at, updated_at
         FROM projects WHERE id = {id};
     """
 
@@ -111,7 +111,6 @@ def create_project(project: NewProject):
     if not validate_data(project, 'project'):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "failed to validate", "data": None})
 
-    root_folder_id = generate_uuid()
     original_images_folder_path = generate_uuid()
     
     os.makedirs(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path, exist_ok=True)
@@ -119,8 +118,8 @@ def create_project(project: NewProject):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to create original images folder", "data": None})
     
     query_text = f"""
-        INSERT INTO projects(name, password, description, root_folder_id, original_images_folder_path, owner_id)
-        VALUES ('{project.name}', '{project.password}', '{project.description}', '{root_folder_id}', '{original_images_folder_path}', {project.owner_id});
+        INSERT INTO projects(name, password, description,original_images_folder_path, owner_id)
+        VALUES ('{project.name}', '{project.password}', '{project.description}','{original_images_folder_path}', {project.owner_id});
     """
 
     result, new_project_id = execute_query(session=connect_session, query_text=query_text)

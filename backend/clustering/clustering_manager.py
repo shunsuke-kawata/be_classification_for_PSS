@@ -5,12 +5,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
-from chroma_db_manager import ChromaDBManager
+from .chroma_db_manager import ChromaDBManager
 import re
-from embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
-from embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from sklearn.metrics.pairwise import cosine_similarity
-from utils import Utils
+from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
+from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
+from .utils import Utils
 class InitClustering:
     
     def __init__(self, chroma_db: ChromaDBManager, images_folder_path: str, output_base_path: str = './results'):
@@ -75,7 +75,6 @@ class InitClustering:
     
     def clustering(self, chroma_db_data: dict[str, list], cluster_num: int, output_folder: bool = False, output_json: bool = False):
         
-
         embeddings_np = np.array(chroma_db_data['embeddings'])
         result_uuids_dict = {}
 
@@ -111,7 +110,7 @@ class InitClustering:
         for key, value in result_uuids_dict.items():
             folder_id = value['folder_id']
             cluster_ids = value['ids']
-            chroma_db_data_in_cluster = self._chroma_db.query_by_ids(cluster_ids)
+            chroma_db_data_in_cluster = self._chroma_db.get_data_by_ids(cluster_ids)
 
             images_embeddings = [
                 ImageEmbeddingsManager.image_to_embedding(self._images_folder_path / Path(metadata.path))
@@ -196,5 +195,7 @@ if __name__ == "__main__":
     )
     # print(type(all_sentence_data['metadatas'][0]))
     cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=cl_module.chroma_db.get_all()['embeddings'])
-    # cl_module.chroma_db.get_all()['embeddings']
+    print(cluster_num)
+    a = cl_module.chroma_db.get_all()['embeddings']
+    print(a)
     cluster_result = cl_module.clustering(chroma_db_data=cl_module.chroma_db.get_all(), cluster_num=cluster_num,output_folder=True, output_json=True)

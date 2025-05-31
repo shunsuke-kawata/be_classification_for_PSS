@@ -100,11 +100,6 @@ def get_image(folder_id: str, name: str):
     folder_path = images_root_dir / folder_id
     image_path = folder_path / name
 
-    print(f"[DEBUG] backend_dir: {backend_dir.resolve()}")
-    print(f"[DEBUG] images_root_dir: {images_root_dir.resolve()}")
-    print(f"[DEBUG] folder_path: {folder_path.resolve()}")
-    print(f"[DEBUG] image_path: {image_path.resolve()}")
-
     if not images_root_dir.exists():
         return JSONResponse(status_code=404, content={"message": "images ディレクトリが存在しません", "data": None})
 
@@ -145,13 +140,14 @@ async def upload_image(
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
 
     try:
-        image_id = generate_uuid()  # 画像IDを生成
 
         # プロジェクトのoriginal_images_folder_pathを取得
         query_text = f"""
             SELECT original_images_folder_path FROM projects WHERE id = {project_id};
         """
         result, _ = execute_query(connect_session, query_text)
+        
+        # プロジェクトが存在しない場合の処理
         if not result or result.rowcount == 0:
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "project not found", "data": None})
 
@@ -186,29 +182,34 @@ async def upload_image(
 
         # ベクトルDBへ登録
         sentence_db_manager = ChromaDBManager("sentence_embeddings")
-        sentence_db_manager.add(
-            documents=[created_caption],
-            metadatas=[ChromaDBManager.ChromaMetaData(
+        
+        # id_exists = sentence_db_manager.()
+        
+        chromadb_id = sentence_db_manager.add_one(
+            document=created_caption,
+            metadata=ChromaDBManager.ChromaMetaData(
                 path=png_path,
                 document=created_caption,
                 is_success=is_created
-            )],
-            embeddings=[SentenceEmbeddingsManager.sentence_to_embedding(created_caption)]
+            ),
+            embeddings=SentenceEmbeddingsManager.sentence_to_embedding(created_caption)
         )
+        
 
-        is_created_sql = 'TRUE' if is_created else 'FALSE'
+        is_created_for_sql = 'TRUE' if is_created else 'FALSE'
         escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
 
         insert_query = f"""
-            INSERT INTO images(id, name, is_created_caption, caption, project_id, uploaded_user_id)
-            VALUES ('{image_id}', '{escaped_png_path}', {is_created_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{uploaded_user_id}');
+            INSERT INTO images(name, is_created_caption, caption, project_id, chromadb_id, uploaded_user_id)
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{chromadb_id}', '{uploaded_user_id}');
         """
         result, _ = execute_query(connect_session, insert_query)
 
         if result:
+            print(chromadb_id)
             return JSONResponse(
                 status_code=status.HTTP_201_CREATED,
-                content={"message": "succeeded to upload image", "data": {"image_id": image_id}}
+                content={"message": "succeeded to upload image", "data": {"image_id": chromadb_id}}
             )
         else:
             return JSONResponse(

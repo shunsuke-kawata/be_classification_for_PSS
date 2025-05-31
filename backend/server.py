@@ -11,6 +11,7 @@ from routers.auth import auth_endpoint
 from routers.systems import systems_endpoint
 from routers.images import images_endpoint
 from routers.test import test_endpoint
+from routers.action import action_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
 import sys
@@ -65,6 +66,7 @@ app.include_router(auth_endpoint)
 app.include_router(systems_endpoint)
 app.include_router(images_endpoint)
 app.include_router(test_endpoint)
+app.include_router(action_endpoint)
 
 #バックエンドエンドポイントルート
 @app.get("/",tags=["systems"],description="特に使用しない")

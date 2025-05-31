@@ -22,8 +22,6 @@ CREATE TABLE projects (
     name VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
     description TEXT,
-    init_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態（0: 未実行, 1: 実行中, 2: 完了）
-    root_folder_id VARCHAR(22), -- 外部キー制約なし
     original_images_folder_path VARCHAR(255) NOT NULL,
     owner_id INT NOT NULL,
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
@@ -38,6 +36,7 @@ CREATE TABLE projects (
 CREATE TABLE project_memberships (
     user_id INT NOT NULL,
     project_id INT NOT NULL,
+    init_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態（0: 未実行, 1: 実行中, 2: 完了 3:失敗）
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
 
@@ -49,11 +48,14 @@ CREATE TABLE project_memberships (
 -- imagesテーブル
 -- ========================
 CREATE TABLE images (
-    id VARCHAR(22) PRIMARY KEY, -- ChromaDBのID
+    id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(255) NOT NULL,
     is_created_caption TINYINT(1) NOT NULL DEFAULT 0,
     caption TEXT,
     project_id INT NOT NULL,
+    chromadb_id VARCHAR(22) NOT NULL,
+    is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+    deleted_at TIMESTAMP(6) NULL DEFAULT NULL,
     uploaded_user_id INT NOT NULL,
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),

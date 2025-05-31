@@ -64,28 +64,72 @@ class ChromaDBManager:
         self.client = chromadb.PersistentClient(path=path)
         self.collection = self.client.get_or_create_collection(name=colection_name)
 
-    def add(self,documents:list[str], metadatas:list[ChromaMetaData],embeddings:list[list[float]] = None)->None:
-        existing_paths = {meta.path for meta in self.get_all_metadata()}
+    def add(
+        self,
+        documents: list[str],
+        metadatas: list[ChromaMetaData],
+        embeddings: list[list[float]] = None
+    ) -> list[str]:
+        # 既存のメタデータを取得して path -> id のマップを作成
+        existing_metadata = {meta.path: meta.id for meta in self.get_all_metadata()}
+        
+        ids_to_return = []
+        filtered_documents = []
+        filtered_metadatas = []
+        filtered_embeddings = []
 
-        filtered_indices = [i for i, meta in enumerate(metadatas) if meta.path not in existing_paths]
+        for i, meta in enumerate(metadatas):
+            if meta.path in existing_metadata:
+                # 既に存在する場合はそのIDを返却用に追加
+                ids_to_return.append(existing_metadata[meta.path])
+            else:
+                # 新規追加するデータを蓄積
+                ids_to_return.append(meta.id)
+                filtered_documents.append(documents[i])
+                filtered_metadatas.append(meta)
+                if embeddings:
+                    filtered_embeddings.append(embeddings[i])
 
-        if not filtered_indices:
-            return
+        # 新規追加データがある場合のみupsert
+        if filtered_documents:
+            kwargs = {
+                "ids": [meta.id for meta in filtered_metadatas],
+                "documents": filtered_documents,
+                "metadatas": [meta.to_dict() for meta in filtered_metadatas],
+            }
+            if embeddings is not None:
+                kwargs["embeddings"] = filtered_embeddings
+            self.collection.upsert(**kwargs)
 
-        # フィルター後のデータを抽出
-        filtered_documents = [documents[i] for i in filtered_indices]
-        filtered_metadatas = [metadatas[i] for i in filtered_indices]
+        return ids_to_return
+    
+    def add_one(self, 
+            document: str, 
+            metadata: ChromaMetaData, 
+            embeddings: list[float] = None) -> str:
+
+        path = metadata.path
+
+        # すでに存在するか確認
+        existing = self.collection.get(
+            where={"path": {"$eq": path}},
+            include=["metadatas"]
+        )
+
+        #すでに存在する場合はそのレコードのIDを返す
+        if existing["ids"]:
+            return existing["ids"][0] 
 
         kwargs = {
-            "ids": [meta.id for meta in filtered_metadatas],
-            "documents": filtered_documents,
-            "metadatas": [meta.to_dict() for meta in filtered_metadatas],
+            "ids": [metadata.id],
+            "documents": [document],
+            "metadatas": [metadata.to_dict()],
         }
-        filtered_embeddings = [embeddings[i] for i in filtered_indices] if embeddings else None
-        if filtered_embeddings:
-            kwargs["embeddings"] = filtered_embeddings
-
+        if embeddings is not None:
+            kwargs["embeddings"] = [embeddings]
         self.collection.upsert(**kwargs)
+        return metadata.id
+    
 
     def get_all(self)->dict[str,list]:
         results = self.collection.get(include=["documents", "metadatas","embeddings"],limit=None)
@@ -101,7 +145,7 @@ class ChromaDBManager:
     
     def get_all_embeddings(self)->list[list[float]]:
         all_data = self.get_all()
-        return all_data
+        return all_data['embeddings']
     
     def update(self, ids:list[str], documents:list[str], metadatas:list[ChromaMetaData],embeddings:list[list[float]] = None)->None:
         
@@ -115,12 +159,12 @@ class ChromaDBManager:
     def delete(self, ids:list[str])->None:
         self.collection.delete(ids=ids)
 
-    def query_by_ids(
+    def get_data_by_ids(
         self,
-        query_ids: list[str]
-    ) -> dict[str, list]:
+        ids: list[str]
+    ) -> dict[str, list[str] | list[float] | list[ChromaMetaData] | list[ChromaDocument]]:
         results = self.collection.get(
-            ids=query_ids,
+            ids=ids,
             include=["documents", "metadatas", "embeddings"]
         )
         return {
@@ -130,16 +174,65 @@ class ChromaDBManager:
             'embeddings': results['embeddings'],
         }
     
+    def get_data_by_id(
+        self,
+        id:str
+    )-> dict[str, str | list[float] | ChromaMetaData | ChromaDocument] | None:
+        
+        results = self.collection.get(
+            ids=[id],
+            include=["documents", "metadatas", "embeddings"]
+        )
+        
+        if len(results['ids']) !=1:
+            return None
+
+        return {
+            'id':results['ids'][0],
+            'metadata':results['metadatas'][0],
+            'document':results['documents'][0],
+            'embedding':results['embeddings'][0],
+        }
+    
+    def get_data_by_metadata(
+        self,
+        key: str,
+        value: str | int | float,
+        ids: list[str] | None = None
+    ):
+        results = self.collection.query(
+            where={key: value},
+            include=["documents", "metadatas", "embeddings"],
+            ids=ids if ids is not None else None
+        )
+        
+        if len(results['ids']) != 1:
+            return None
+
+        return {
+            'id': results['ids'][0],
+            'metadata': self.ChromaMetaData(
+                id=results['metadatas'][0]['id'],
+                path=results['metadatas'][0]['path'],
+                document=results['metadatas'][0]['document'],
+                is_success=results['metadatas'][0]['is_success']
+            ),
+            'document': self.ChromaDocument(document=results['documents'][0]),
+            'embedding': results['embeddings'][0],
+        }
+    
     def query_by_embeddings(
         self,
         query_embeddings: list[list[float]],
+        ids: list[str] | None = None,
         n_results: int = 10,
         distance_threshold: float | None = None
-    ) -> dict[str, list]:
+    ) -> dict[str, list[str] | list[ChromaMetaData] | list[ChromaDocument] | list[float]]:
         results = self.collection.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
-            include=["documents", "metadatas", "distances", "embeddings"]
+            include=["documents", "metadatas", "distances", "embeddings"],
+            ids=ids if ids is not None else None
         )
         
         result_dict = {
@@ -176,35 +269,39 @@ class ChromaDBManager:
 
 if __name__ == "__main__":
 
-    with open('captions_20250522_013210.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    # with open('captions_20250522_013210.json', 'r', encoding='utf-8') as f:
+    #     data = json.load(f)
 
-    succeed_data = [item for item in data if item['is_success']]
+    # succeed_data = [item for item in data if item['is_success']]
 
-    # ChromaMetaDataインスタンスを作成
-    metadatas = [
-        ChromaDBManager.ChromaMetaData(
-            path=item["path"],
-            document=item["caption"],
-            is_success=item["is_success"]
-        )
-        for item in succeed_data
-    ]
+    # # ChromaMetaDataインスタンスを作成
+    # metadatas = [
+    #     ChromaDBManager.ChromaMetaData(
+    #         path=item["path"],
+    #         document=item["caption"],
+    #         is_success=item["is_success"]
+    #     )
+    #     for item in succeed_data
+    # ]
 
     # Sentence Embedding（テキストベース）
     sentence_db_manager = ChromaDBManager("sentence_embeddings")
+    
+    _ = sentence_db_manager.query_by_document("test")
+    
+   
 
-    sentence_db_manager.add(
-        documents=[meta.document for meta in metadatas],  # または meta.caption にしたければ ChromaMetaData にフィールド追加が必要
-        metadatas=metadatas,
-        embeddings=[SentenceEmbeddingsManager.sentence_to_embedding(item["caption"]) for item in succeed_data]
-    )
+    # sentence_db_manager.add(
+    #     documents=[meta.document for meta in metadatas],  # または meta.caption にしたければ ChromaMetaData にフィールド追加が必要
+    #     metadatas=metadatas,
+    #     embeddings=[SentenceEmbeddingsManager.sentence_to_embedding(item["caption"]) for item in succeed_data]
+    # )
      
-    # Image Embedding（画像ベース）
-    image_db_manager = ChromaDBManager("image_embeddings")
-    image_db_manager.add(
-        documents=[meta.path for meta in metadatas],
-        embeddings=[ImageEmbeddingsManager.image_to_embedding(f"./imgs/{item['path']}") for item in succeed_data],
-        metadatas=metadatas
-    )
+    # # Image Embedding（画像ベース）
+    # image_db_manager = ChromaDBManager("image_embeddings")
+    # image_db_manager.add(
+    #     documents=[meta.path for meta in metadatas],
+    #     embeddings=[ImageEmbeddingsManager.image_to_embedding(f"./imgs/{item['path']}") for item in succeed_data],
+    #     metadatas=metadatas
+    # )
     
