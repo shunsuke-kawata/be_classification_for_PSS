@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import numpy as np
@@ -11,7 +12,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
-class InitClustering:
+class InitClusteringManager:
+    
+    COHESION_THRESHOLD = 0.70
     
     def __init__(self, chroma_db: ChromaDBManager, images_folder_path: str, output_base_path: str = './results'):
         def _is_valid_path(path: str) -> bool:
@@ -33,7 +36,7 @@ class InitClustering:
             return True
 
         if not (_is_valid_path(images_folder_path) and _is_valid_path(output_base_path)):
-            raise ValueError(f" Error Folder Path: {images_folder_path}")
+            raise ValueError(f" Error Folder Path: {images_folder_path}, {output_base_path}")
         
         self._chroma_db = chroma_db
         self._images_folder_path = Path(images_folder_path)
@@ -106,7 +109,8 @@ class InitClustering:
                 return 1.0
             total = np.sum(similarity_matrix) - n
             return total / (n * (n - 1))
-
+        
+            
         for key, value in result_uuids_dict.items():
             folder_id = value['folder_id']
             cluster_ids = value['ids']
@@ -122,7 +126,7 @@ class InitClustering:
 
             cohesion = _cohesion_cosine_similarity(images_embeddings)
 
-            if cohesion >= 0.70:
+            if cohesion >= self.COHESION_THRESHOLD:
                 # 親クラスタとして保存（並列コピー）
                 if output_folder:
                     output_dir = self._output_base_path / folder_id
@@ -135,7 +139,7 @@ class InitClustering:
                 continue
 
             # 小クラスタリング（ネスト）
-            cluster_num_in_cluster, _ = cl_module.get_optimal_cluster_num(
+            cluster_num_in_cluster, _ = self.get_optimal_cluster_num(
                 embeddings=images_embeddings,
                 min_cluster_num=1,
                 max_cluster_num=min(len(images_embeddings), 10)
@@ -188,14 +192,13 @@ class InitClustering:
         return output_json
     
 if __name__ == "__main__":
-    cl_module = InitClustering(
+    cl_module = InitClusteringManager(
         chroma_db=ChromaDBManager('sentence_embeddings'),
         images_folder_path='./imgs',
         output_base_path='./results'
     )
     # print(type(all_sentence_data['metadatas'][0]))
     cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=cl_module.chroma_db.get_all()['embeddings'])
-    print(cluster_num)
+
     a = cl_module.chroma_db.get_all()['embeddings']
-    print(a)
     cluster_result = cl_module.clustering(chroma_db_data=cl_module.chroma_db.get_all(), cluster_num=cluster_num,output_folder=True, output_json=True)

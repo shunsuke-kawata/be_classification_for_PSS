@@ -1,5 +1,5 @@
 from fastapi.responses import JSONResponse
-from config import FRONTEND_PORT,BACKEND_PORT,DEFAULT_IMAGE_PATH
+from config import FRONTEND_PORT,BACKEND_PORT,DEFAULT_IMAGE_PATH,DEFAULT_OUTPUT_PATH
 from fastapi import FastAPI, status
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,6 +90,11 @@ def update_docs_html():
 #アプリの起動
 if __name__ == "__main__":
     
+    
+    #初期実行の場合ディレクトリを作成
     images_path = Path(DEFAULT_IMAGE_PATH)
+    output_path = Path(DEFAULT_OUTPUT_PATH)
     os.makedirs(images_path, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
+    
     uvicorn.run("server:app", host="0.0.0.0", port=int(BACKEND_PORT), reload=True)

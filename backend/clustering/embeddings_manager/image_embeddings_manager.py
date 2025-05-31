@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from PIL import Image
 import torch
 import torchvision.transforms as transforms
@@ -20,13 +22,17 @@ class ImageEmbeddingsManager:
                              std=[0.229, 0.224, 0.225]),
     ])
 
+    BASE_DIR = Path(os.getcwd()) 
+
     @classmethod
-    def image_to_embedding(cls, image_path: str) -> list[float] | None:
+    def image_to_embedding(cls, image_path: Path) -> list[float] | None:
+        full_path = cls.BASE_DIR / image_path  # 絶対パスに変換
         try:
-            image = Image.open(image_path).convert("RGB")
+            image = Image.open(full_path).convert("RGB")
             image_tensor = cls._transform(image).unsqueeze(0).to(cls._device)
             with torch.no_grad():
                 embedding = cls._model(image_tensor).squeeze().cpu().numpy()
             return embedding.tolist()
         except Exception as e:
+            print(e)
             return None

@@ -83,17 +83,18 @@ def read_project(project_id: str):
 
     result, _ = execute_query(session=connect_session, query_text=query_text)
     if result is not None:
-        rows = result.mappings().all()
-        res_data = []
-        for row in rows:
-            row_dict = dict(row)
-            # すべての datetime を文字列に変換
-            for k, v in row_dict.items():
-                if isinstance(v, datetime):
-                    row_dict[k] = v.isoformat()
-            res_data.append(row_dict)
+        rows = result.mappings().first()  # 最初の行だけ取得
         
-        return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to read projects", "data": res_data[0]})
+        if rows is None:
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": "project not found", "data": None})
+                
+        row_dict = dict(rows)
+        # すべての datetime を文字列に変換
+        for k, v in row_dict.items():
+            if isinstance(v, datetime):
+                row_dict[k] = v.isoformat()
+
+        return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to read projects", "data": row_dict})
     else:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND,content={"message": "failedß to read projects", "data": None})
 
