@@ -93,12 +93,10 @@ class InitClusteringManager:
         # 各親クラスタにUUIDを割り当て
         for idx in range(cluster_num):
             folder_id = Utils.generate_uuid()
-            result_uuids_dict[idx] = {'folder_id': folder_id, 'ids': []}
-        
-        # result_uuids_dict['root_folder_id'] = Utils.generate_uuid()
+            result_uuids_dict[idx] = {'folder_id': folder_id, 'data': {}}
 
         for i, label in enumerate(labels):
-            result_uuids_dict[label]['ids'].append(chroma_db_data['ids'][i])
+            result_uuids_dict[label]['data'][chroma_db_data['ids'][i]]=chroma_db_data['metadatas'][i].path
 
         # コサイン凝集度の計算
         def _cohesion_cosine_similarity(vectors: list[float]) -> float:
@@ -113,9 +111,9 @@ class InitClusteringManager:
             
         for key, value in result_uuids_dict.items():
             folder_id = value['folder_id']
-            cluster_ids = value['ids']
-            chroma_db_data_in_cluster = self._chroma_db.get_data_by_ids(cluster_ids)
-
+            cluster_ids = value['data']
+            chroma_db_data_in_cluster = self._chroma_db.get_data_by_ids(list(cluster_ids.keys()))
+            
             images_embeddings = [
                 ImageEmbeddingsManager.image_to_embedding(self._images_folder_path / Path(metadata.path))
                 for metadata in chroma_db_data_in_cluster['metadatas']
@@ -152,10 +150,10 @@ class InitClusteringManager:
 
             for i in range(cluster_num_in_cluster):
                 child_folder_id = Utils.generate_uuid()
-                uuid_dict_in_cluster[i] = {'folder_id': child_folder_id, 'ids': []}
+                uuid_dict_in_cluster[i] = {'folder_id': child_folder_id, 'data': {}}
 
             for idx, nested_label in enumerate(labels_nested):
-                uuid_dict_in_cluster[nested_label]['ids'].append(cluster_ids[idx])
+                uuid_dict_in_cluster[nested_label]['data'][chroma_db_data['ids'][idx]] = chroma_db_data['metadatas'][idx].path
 
             if output_folder:
                 for nested_label, data in uuid_dict_in_cluster.items():

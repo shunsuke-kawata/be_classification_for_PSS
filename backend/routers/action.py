@@ -98,7 +98,7 @@ def execute_init_clustering(
                 output_json=True
             )
         except Exception as e:
-            print(f"Error during clustering: {e}")
+            print(f"Error during clustering:{e}")
             # エラーが発生した場合は初期化状態を更新
             
             clustering_state = CLUSTERING_STATUS.FAILED
