@@ -37,6 +37,7 @@ CREATE TABLE project_memberships (
     user_id INT NOT NULL,
     project_id INT NOT NULL,
     init_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態（0: 未実行, 1: 実行中, 2: 完了 3:失敗）
+    mongo_result_id VARCHAR(22) NOT NULL,
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
 

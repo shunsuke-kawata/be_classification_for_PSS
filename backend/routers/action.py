@@ -11,13 +11,16 @@ from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, LoginUser,JoinUser
 from config import CLUSTERING_STATUS,DEFAULT_IMAGE_PATH,DEFAULT_OUTPUT_PATH
 from clustering.clustering_manager import ChromaDBManager, InitClusteringManager
+from clustering.mongo_db_manager import MongoDBManager
 from fastapi import BackgroundTasks
 
 #分割したエンドポイントの作成
 #ログイン操作
 action_endpoint = APIRouter()
 
-@action_endpoint.get("/action/clustering/init/{project_id}", tags=["auth"], description="ログイン処理を行う")
+@action_endpoint.get("/action/clustering/result/{project_id}",tag=["action"])
+
+@action_endpoint.get("/action/clustering/init/{project_id}", tags=["action"], description="初期クラスタリングを実装する")
 def execute_init_clustering(
     project_id: int = None,
     user_id: int = None,
@@ -40,7 +43,7 @@ def execute_init_clustering(
 
     connect_session = create_connect_session()
     query_text = f"""
-        SELECT project_memberships.init_clustering_state, projects.original_images_folder_path
+        SELECT project_memberships.init_clustering_state, project_memberships.mongo_result_id,projects.original_images_folder_path
         FROM project_memberships
         JOIN projects ON project_memberships.project_id = projects.id
         WHERE project_memberships.project_id = {project_id} AND project_memberships.user_id = {user_id};
@@ -57,6 +60,7 @@ def execute_init_clustering(
 
     init_clustering_state = result_mappings["init_clustering_state"]
     original_images_folder_path = result_mappings["original_images_folder_path"]
+    mongo_result_id = result_mappings["mongo_result_id"]
 
     if init_clustering_state != CLUSTERING_STATUS.NOT_EXECUTED:
         return JSONResponse(
@@ -91,12 +95,18 @@ def execute_init_clustering(
             )
             embeddings = cl_module.chroma_db.get_data_by_ids(target_ids)['embeddings']
             cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=embeddings)
-            cl_module.clustering(
+            result_dict = cl_module.clustering(
                 chroma_db_data=cl_module.chroma_db.get_data_by_ids(target_ids),
                 cluster_num=cluster_num,
                 output_folder=True,
                 output_json=True
             )
+            mongo_module = MongoDBManager()
+            mongo_module.update_document(
+                collection_name='clustering_results',
+                query={"mongo_result_id": mongo_result_id},
+                update={"mongo_result_id":mongo_result_id,"result":result_dict},
+                )
         except Exception as e:
             print(f"Error during clustering:{e}")
             # エラーが発生した場合は初期化状態を更新

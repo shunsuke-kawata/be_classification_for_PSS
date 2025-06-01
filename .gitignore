@@ -8,6 +8,7 @@
 **/out/
 **/images
 **/output
+**/mongo_data
 /backend/index.html
 /backend/chroma_db/
 **/test/

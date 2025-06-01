@@ -1,0 +1,7 @@
+FROM mongo:6.0
+
+WORKDIR /data/db
+
+COPY ./database/mongodb_cnf/mongod.conf /etc/mongod.conf
+
+CMD [ "mongod"]

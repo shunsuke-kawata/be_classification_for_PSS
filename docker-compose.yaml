@@ -70,6 +70,26 @@ services:
       - ${DATABASE_PORT}
     networks:
       - pss-net
+    
+  db-mongo-pss-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.mongodb
+    container_name: db-mongo-pss-app
+    env_file:
+      - .env
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    ports:
+      - "${MONGO_PORT}:${MONGO_PORT}"
+    expose:
+     - ${MONGO_PORT}
+    volumes:
+      - ./database/mongo_data:/data/db
+      - ./database/js/initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      - pss-net
 
 networks:
   pss-net:

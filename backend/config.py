@@ -5,8 +5,9 @@ from enum import IntEnum
 # .envファイルの内容を読み込む
 load_dotenv()
 
-#ポート設定
+# ポート設定
 FRONTEND_PORT = os.environ['FRONTEND_PORT']
+FRONTEND_PORT_IN_CONTAINER = os.environ['FRONTEND_PORT_IN_CONTAINER']
 BACKEND_PORT = os.environ['BACKEND_PORT']
 
 # MySQL 設定
@@ -25,6 +26,8 @@ MONGO_HOST = os.environ['MONGO_HOST']
 MONGO_PORT = os.environ['MONGO_PORT']
 MONGO_DB = os.environ['MONGO_DB']
 MONGO_AUTH_DB = os.environ['MONGO_AUTH_DB']
+MONGO_INITDB_ROOT_USERNAME = os.environ['MONGO_INITDB_ROOT_USERNAME']
+MONGO_INITDB_ROOT_PASSWORD = os.environ['MONGO_INITDB_ROOT_PASSWORD']
 
 # 管理者コード
 ADMINISTRATOR_CODE = os.environ['ADMINISTRATOR_CODE']
@@ -35,7 +38,9 @@ OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
 # パス設定
 DEFAULT_IMAGE_PATH = os.environ.get('DEFAULT_IMAGE_PATH', 'images')
 DEFAULT_OUTPUT_PATH = os.environ.get('DEFAULT_OUTPUT_PATH', 'output')
+NEXT_PUBLIC_DEFAULT_IMAGE_PATH = os.environ.get('NEXT_PUBLIC_DEFAULT_IMAGE_PATH', '/images')
 
+# クラスタリングステータス定義
 class CLUSTERING_STATUS(IntEnum):
     NOT_EXECUTED = 0
     EXECUTING = 1

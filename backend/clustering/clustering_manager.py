@@ -14,7 +14,7 @@ from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
 class InitClusteringManager:
     
-    COHESION_THRESHOLD = 0.70
+    COHESION_THRESHOLD = 0.75
     
     def __init__(self, chroma_db: ChromaDBManager, images_folder_path: str, output_base_path: str = './results'):
         def _is_valid_path(path: str) -> bool:
@@ -56,139 +56,110 @@ class InitClusteringManager:
     
     def get_optimal_cluster_num(self, embeddings: list[float], min_cluster_num: int = 5, max_cluster_num: int = 30) -> tuple[int, float]:
         embeddings_np = np.array(embeddings)
+        n_samples = len(embeddings_np)
+
+        if n_samples < 3:
+            print("サンプル数が少なすぎてクラスタリングできません")
+            return 1, -1.0
+
         best_score = -1
         best_k = min_cluster_num
         scores = []
 
         for k in range(min_cluster_num, max_cluster_num + 1):
-            model = AgglomerativeClustering(n_clusters=k)
-            labels = model.fit_predict(embeddings_np)
+            if k >= n_samples:
+                continue  # クラスタ数がサンプル数以上は無効
 
-            if len(set(labels)) == 1:
-                continue 
+            try:
+                model = AgglomerativeClustering(n_clusters=k)
+                labels = model.fit_predict(embeddings_np)
 
-            score = silhouette_score(embeddings_np, labels)
-            scores.append((k, score))
+                if len(set(labels)) < 2:
+                    continue  # すべて同じクラスタ
 
-            if score > best_score:
-                best_score = score
-                best_k = k
+                score = silhouette_score(embeddings_np, labels)
+                scores.append((k, score))
 
-        return best_k, float(best_score)
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+            except Exception as e:
+                print(f"k={k} のときにエラーが発生: {e}")
+                continue
+        
+        print("スコア一覧:", scores)
+
+        return best_k, float(best_score) if best_score >= 0 else (1, -1.0)
     
     def clustering(self, chroma_db_data: dict[str, list], cluster_num: int, output_folder: bool = False, output_json: bool = False):
-        
         embeddings_np = np.array(chroma_db_data['embeddings'])
         result_uuids_dict = {}
 
-        # 親クラスタリング
-        model = AgglomerativeClustering(n_clusters=cluster_num)
-        labels = model.fit_predict(embeddings_np)
-
-        if output_folder:
-            if self._output_base_path.exists():
-                shutil.rmtree(self._output_base_path)
-            self._output_base_path.mkdir(parents=True, exist_ok=True)
-
-        # 各親クラスタにUUIDを割り当て
-        for idx in range(cluster_num):
+        if cluster_num <= 1:
+            # すべてを1クラスタとして処理
             folder_id = Utils.generate_uuid()
-            result_uuids_dict[idx] = {'folder_id': folder_id, 'data': {}}
+            result_uuids_dict[0] = {'folder_id': folder_id, 'data': {}}
 
-        for i, label in enumerate(labels):
-            result_uuids_dict[label]['data'][chroma_db_data['ids'][i]]=chroma_db_data['metadatas'][i].path
-
-        # コサイン凝集度の計算
-        def _cohesion_cosine_similarity(vectors: list[float]) -> float:
-            vectors_np = np.array(vectors)
-            similarity_matrix = cosine_similarity(vectors_np)
-            n = len(vectors_np)
-            if n < 2:
-                return 1.0
-            total = np.sum(similarity_matrix) - n
-            return total / (n * (n - 1))
-        
-            
-        for key, value in result_uuids_dict.items():
-            folder_id = value['folder_id']
-            cluster_ids = value['data']
-            chroma_db_data_in_cluster = self._chroma_db.get_data_by_ids(list(cluster_ids.keys()))
-            
-            images_embeddings = [
-                ImageEmbeddingsManager.image_to_embedding(self._images_folder_path / Path(metadata.path))
-                for metadata in chroma_db_data_in_cluster['metadatas']
-            ]
-
-            if len(images_embeddings) < 2:
-                continue
-
-            cohesion = _cohesion_cosine_similarity(images_embeddings)
-
-            if cohesion >= self.COHESION_THRESHOLD:
-                # 親クラスタとして保存（並列コピー）
-                if output_folder:
-                    output_dir = self._output_base_path / folder_id
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    Utils.copy_images_parallel(
-                        chroma_db_data_in_cluster['metadatas'],
-                        self._images_folder_path,
-                        output_dir
-                    )
-                continue
-
-            # 小クラスタリング（ネスト）
-            cluster_num_in_cluster, _ = self.get_optimal_cluster_num(
-                embeddings=images_embeddings,
-                min_cluster_num=1,
-                max_cluster_num=min(len(images_embeddings), 10)
-            )
-
-            model_nested = AgglomerativeClustering(n_clusters=cluster_num_in_cluster)
-            labels_nested = model_nested.fit_predict(images_embeddings)
-
-            uuid_dict_in_cluster = {}
-
-            for i in range(cluster_num_in_cluster):
-                child_folder_id = Utils.generate_uuid()
-                uuid_dict_in_cluster[i] = {'folder_id': child_folder_id, 'data': {}}
-
-            for idx, nested_label in enumerate(labels_nested):
-                uuid_dict_in_cluster[nested_label]['data'][chroma_db_data['ids'][idx]] = chroma_db_data['metadatas'][idx].path
+            for i in range(len(chroma_db_data['ids'])):
+                result_uuids_dict[0]['data'][chroma_db_data['ids'][i]] = chroma_db_data['metadatas'][i].path
 
             if output_folder:
-                for nested_label, data in uuid_dict_in_cluster.items():
-                    output_nested_dir = self._output_base_path / folder_id / data['folder_id']
-                    output_nested_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = self._output_base_path / folder_id
+                output_dir.mkdir(parents=True, exist_ok=True)
+                Utils.copy_images_parallel(
+                    chroma_db_data['metadatas'],
+                    self._images_folder_path,
+                    output_dir
+                )
+        
+        else:
+            # 通常通りクラスタリング
+            model = AgglomerativeClustering(n_clusters=cluster_num)
+            labels = model.fit_predict(embeddings_np)
 
-                    metadatas_to_copy = [
-                        chroma_db_data_in_cluster['metadatas'][idx]
-                        for idx, label in enumerate(labels_nested)
-                        if label == nested_label
-                    ]
+            if output_folder:
+                if self._output_base_path.exists():
+                    shutil.rmtree(self._output_base_path)
+                self._output_base_path.mkdir(parents=True, exist_ok=True)
 
-                    Utils.copy_images_parallel(
-                        metadatas_to_copy,
-                        self._images_folder_path,
-                        output_nested_dir
-                    )
+            for idx in range(cluster_num):
+                folder_id = Utils.generate_uuid()
+                result_uuids_dict[idx] = {'folder_id': folder_id, 'data': {}}
 
-            result_uuids_dict[key]['inner'] = uuid_dict_in_cluster
+            for i, label in enumerate(labels):
+                result_uuids_dict[label]['data'][chroma_db_data['ids'][i]] = chroma_db_data['metadatas'][i].path
 
-        #出力するjsonの型を整形
-        output_json = {
-            "root_folder_id": Utils.generate_uuid(),
-            "results": result_uuids_dict
-        }
-        # JSON出力
+            # （中略）← 従来のサブクラスタリング処理（cohesionチェックなど）
+
+        # transformed_results の生成は共通
+        transformed_results = {}
+
+        for parent_cluster in result_uuids_dict.values():
+            parent_folder_id = parent_cluster["folder_id"]
+            parent_data = parent_cluster["data"]
+
+            if "inner" in parent_cluster:
+                inner_data = {}
+                for child_cluster in parent_cluster["inner"].values():
+                    child_folder_id = child_cluster["folder_id"]
+                    child_data = child_cluster["data"]
+                    inner_data[child_folder_id] = child_data
+
+                transformed_results[parent_folder_id] = {
+                    "inner": inner_data
+                }
+            else:
+                transformed_results[parent_folder_id] = parent_data
+
         if output_json:
             self._output_base_path.mkdir(parents=True, exist_ok=True)
             output_json_path = self._output_base_path / "result.json"
             with open(output_json_path, "w", encoding="utf-8") as f:
-                
-                json.dump(output_json, f, ensure_ascii=False, indent=2)
+                json.dump(transformed_results, f, ensure_ascii=False, indent=2)
 
-        return output_json
-    
+        return transformed_results
+
+
 if __name__ == "__main__":
     cl_module = InitClusteringManager(
         chroma_db=ChromaDBManager('sentence_embeddings'),

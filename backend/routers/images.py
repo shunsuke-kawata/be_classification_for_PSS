@@ -22,6 +22,7 @@ from clustering.caption_manager import CaptionManager
 from clustering.chroma_db_manager import ChromaDBManager
 from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from clustering.embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
+from clustering.utils import Utils
 
 images_endpoint = APIRouter()
 
@@ -178,7 +179,7 @@ async def upload_image(
             f.write(png_bytes)
 
         # 仮のキャプション生成
-        is_created, created_caption = True, f"This is a sample caption for {file.filename}"
+        is_created, created_caption = Utils.get_exmaple_caption(png_path)
 
         # ベクトルDBへ登録
         sentence_db_manager = ChromaDBManager("sentence_embeddings")
