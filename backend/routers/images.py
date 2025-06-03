@@ -183,10 +183,12 @@ async def upload_image(
 
         # ベクトルDBへ登録
         sentence_db_manager = ChromaDBManager("sentence_embeddings")
+        image_db_manager = ChromaDBManager("image_embeddings")
         
         # id_exists = sentence_db_manager.()
         
-        chromadb_id = sentence_db_manager.add_one(
+        #生成されたキャプションから文章特徴量をデータベースに保存
+        chromadb_sentence_id = sentence_db_manager.add_one(
             document=created_caption,
             metadata=ChromaDBManager.ChromaMetaData(
                 path=png_path,
@@ -196,21 +198,31 @@ async def upload_image(
             embeddings=SentenceEmbeddingsManager.sentence_to_embedding(created_caption)
         )
         
-
+        #保存された画像から画像特徴量をデータベースに保存
+        chromadb_image_id = image_db_manager.add_one(
+            document=created_caption,
+            metadata=ChromaDBManager.ChromaMetaData(
+                path=png_path,
+                document=created_caption,
+                is_success=is_created
+            ),
+            embeddings=ImageEmbeddingsManager.image_to_embedding(save_path)
+        )
+        
         is_created_for_sql = 'TRUE' if is_created else 'FALSE'
         escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
 
+        clustering_id = Utils.generate_uuid()
         insert_query = f"""
-            INSERT INTO images(name, is_created_caption, caption, project_id, chromadb_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{chromadb_id}', '{uploaded_user_id}');
+            INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id,chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}','{chromadb_sentence_id}','{chromadb_image_id}', '{uploaded_user_id}');
         """
         result, _ = execute_query(connect_session, insert_query)
 
         if result:
-            print(chromadb_id)
             return JSONResponse(
                 status_code=status.HTTP_201_CREATED,
-                content={"message": "succeeded to upload image", "data": {"image_id": chromadb_id}}
+                content={"message": "succeeded to upload image", "data": {"chromadb_sentence_id": chromadb_sentence_id,"chromadb_image_id":chromadb_image_id}}
             )
         else:
             return JSONResponse(

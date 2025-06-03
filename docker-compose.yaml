@@ -43,7 +43,7 @@ services:
     networks:
       - pss-net
   
-  #データベースコンテナ
+  #RDBMSデータベースコンテナ
   db-pss-app:
     build:
       context: .
@@ -60,7 +60,7 @@ services:
     volumes:
       - ./database/cnf/my.cnf:/etc/mysql/conf.d/my.cnf
       - ./database/log/slow.log:/var/log/slow.log
-      - ./database/data:/var/lib/mysql 
+      - ./database/mysql_data:/var/lib/mysql 
       - ./database/sql/:/tmp/work/sql/
       - ./database/out/:/tmp/work/out/
       - ./database/sql/initdb.d:/docker-entrypoint-initdb.d
@@ -70,7 +70,8 @@ services:
       - ${DATABASE_PORT}
     networks:
       - pss-net
-    
+      
+  #NoSQLデータベーツコンテナ  
   db-mongo-pss-app:
     build:
       context: .

@@ -16,20 +16,17 @@ class InitClusteringManager:
     
     COHESION_THRESHOLD = 0.75
     
-    def __init__(self, chroma_db: ChromaDBManager, images_folder_path: str, output_base_path: str = './results'):
+    def __init__(self, sentence_db: ChromaDBManager, image_db:ChromaDBManager,images_folder_path: str, output_base_path: str = './results'):
         def _is_valid_path(path: str) -> bool:
             if not isinstance(path, str) or not path.strip():
                 return False
 
-            # 条件 3: 必ず ./ ../ / のいずれかで始まる
             if not (path.startswith("./") or path.startswith("../") or path.startswith("/")):
                 return False
 
-            # 条件 4: 最後は / で終わってはいけない
             if path.endswith("/"):
                 return False
 
-            # 条件 5: 危険文字の除外
             if re.search(r'[<>:"|?*]', path):
                 return False
 
@@ -38,13 +35,18 @@ class InitClusteringManager:
         if not (_is_valid_path(images_folder_path) and _is_valid_path(output_base_path)):
             raise ValueError(f" Error Folder Path: {images_folder_path}, {output_base_path}")
         
-        self._chroma_db = chroma_db
+        self._sentence_db = sentence_db
+        self._image_db = image_db
         self._images_folder_path = Path(images_folder_path)
         self._output_base_path = Path(output_base_path)
     
     @property
-    def chroma_db(self) -> ChromaDBManager:
-        return self._chroma_db
+    def sentence_db(self) -> ChromaDBManager:
+        return self._sentence_db
+
+    @property
+    def image_db(self)->ChromaDBManager:
+        return self._image_db
 
     @property
     def images_folder_path(self) -> Path:
@@ -87,31 +89,43 @@ class InitClusteringManager:
                 print(f"k={k} のときにエラーが発生: {e}")
                 continue
         
-        print("スコア一覧:", scores)
-
         return best_k, float(best_score) if best_score >= 0 else (1, -1.0)
     
-    def clustering(self, chroma_db_data: dict[str, list], cluster_num: int, output_folder: bool = False, output_json: bool = False):
-        embeddings_np = np.array(chroma_db_data['embeddings'])
+    def clustering(
+        self, 
+        sentence_db_data: dict[str, list], 
+        image_db_data:dict[str,list],
+        clustering_id_dict:dict,
+        sentence_id_dict:dict,
+        image_id_dict:dict,
+        cluster_num: int, 
+        output_folder: bool = False, 
+        output_json: bool = False
+    ):
+        
+        print("start")
+
+        embeddings_np = np.array(sentence_db_data['embeddings'])
         result_uuids_dict = {}
 
+        print("1 clustering")
+        ## 一段階目のクラスタリング（文章特徴量）
         if cluster_num <= 1:
             # すべてを1クラスタとして処理
             folder_id = Utils.generate_uuid()
             result_uuids_dict[0] = {'folder_id': folder_id, 'data': {}}
 
-            for i in range(len(chroma_db_data['ids'])):
-                result_uuids_dict[0]['data'][chroma_db_data['ids'][i]] = chroma_db_data['metadatas'][i].path
+            for i in range(len(sentence_db_data['ids'])):
+                result_uuids_dict[0]['data'][sentence_db_data['ids'][i]] = sentence_db_data['metadatas'][i].path
 
             if output_folder:
                 output_dir = self._output_base_path / folder_id
                 output_dir.mkdir(parents=True, exist_ok=True)
                 Utils.copy_images_parallel(
-                    chroma_db_data['metadatas'],
+                    sentence_db_data['metadatas'],
                     self._images_folder_path,
                     output_dir
                 )
-        
         else:
             # 通常通りクラスタリング
             model = AgglomerativeClustering(n_clusters=cluster_num)
@@ -127,11 +141,55 @@ class InitClusteringManager:
                 result_uuids_dict[idx] = {'folder_id': folder_id, 'data': {}}
 
             for i, label in enumerate(labels):
-                result_uuids_dict[label]['data'][chroma_db_data['ids'][i]] = chroma_db_data['metadatas'][i].path
+                result_uuids_dict[label]['data'][sentence_db_data['ids'][i]] = sentence_db_data['metadatas'][i].path
+        
+        # print(result_uuids_dict)
 
-            # （中略）← 従来のサブクラスタリング処理（cohesionチェックなど）
+        #二段階目のクラスタリング（画像特徴量）
+        def _cohesion_cosine_similarity(vectors: list[float]) -> float:
+            vectors_np = np.array(vectors)
+            similarity_matrix = cosine_similarity(vectors_np)
+            n = len(vectors_np)
+            if n < 2:
+                return 1.0
+            total = np.sum(similarity_matrix) - n
+            return total / (n * (n - 1))
+        
+        print("2 clustering")
+        for key, value in result_uuids_dict.items():
+            sentence_in_cluster = value['data']
+            #該当のchromadbのデータを取得
+            sentence_data_in_cluster = self.sentence_db.get_data_by_ids(list(sentence_in_cluster.keys()))
+            
+            #凝集度が一定以上の時階層クラスタリングをスキップ（文章特徴量ベクトルの凝集度で判定する）
+            cohesion_cosine_similarity = _cohesion_cosine_similarity(vectors=sentence_data_in_cluster['embeddings'])
+            if(cohesion_cosine_similarity>self.COHESION_THRESHOLD):
+                continue
 
-        # transformed_results の生成は共通
+            image_ids_dict = {k: sentence_in_cluster[k] for k in sentence_id_dict.keys() if k in sentence_in_cluster.keys()}
+            print(image_ids_dict)
+            
+            image_data_in_cluster = self.image_db.get_data_by_ids(list(image_ids_dict.keys()))
+    
+            #クラスタ数が1の場合スキップ(画像特徴量ベクトルで判定する)
+            inner_cluster_num, _ = self.get_optimal_cluster_num(embeddings=image_data_in_cluster['embeddings'])
+            if inner_cluster_num <=1:
+                continue
+            
+            result_uuids_inner_dict = {}
+            # 通常通りクラスタリング
+            model = AgglomerativeClustering(n_clusters=inner_cluster_num)
+            labels = model.fit_predict(embeddings_np)
+
+            for idx in range(inner_cluster_num):
+                folder_id = Utils.generate_uuid()
+                result_uuids_inner_dict[idx] = {'folder_id': folder_id, 'data': {}}
+
+            for i, label in enumerate(labels):
+                result_uuids_inner_dict[label]['data'][sentence_db_data['ids'][i]] = sentence_db_data['metadatas'][i].path
+            
+            result_uuids_dict[key]['inner'] = result_uuids_inner_dict
+            
         transformed_results = {}
 
         for parent_cluster in result_uuids_dict.values():
@@ -145,9 +203,7 @@ class InitClusteringManager:
                     child_data = child_cluster["data"]
                     inner_data[child_folder_id] = child_data
 
-                transformed_results[parent_folder_id] = {
-                    "inner": inner_data
-                }
+                transformed_results[parent_folder_id] = inner_data
             else:
                 transformed_results[parent_folder_id] = parent_data
 
@@ -167,7 +223,7 @@ if __name__ == "__main__":
         output_base_path='./results'
     )
     # print(type(all_sentence_data['metadatas'][0]))
-    cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=cl_module.chroma_db.get_all()['embeddings'])
+    cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=cl_module.sentence_db.get_all()['embeddings'])
 
     a = cl_module.chroma_db.get_all()['embeddings']
-    cluster_result = cl_module.clustering(chroma_db_data=cl_module.chroma_db.get_all(), cluster_num=cluster_num,output_folder=True, output_json=True)
+    cluster_result = cl_module.clustering(chroma_db_data=cl_module.sentence_db.get_all(), cluster_num=cluster_num,output_folder=True, output_json=True)
