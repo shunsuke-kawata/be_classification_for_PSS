@@ -140,7 +140,6 @@ def execute_init_clustering(
                 output_json=True
             )
             
-            
             mongo_module = MongoDBManager()
             mongo_module.update_document(
                 collection_name='clustering_results',
@@ -149,14 +148,11 @@ def execute_init_clustering(
                 )
         except Exception as e:
             print(f"Error during clustering:{e}")
-            # エラーが発生した場合は初期化状態を更新
             
+            # エラーが発生した場合は初期化状態を更新
             clustering_state = CLUSTERING_STATUS.FAILED
         else:
-            # clustering_state = CLUSTERING_STATUS.FINISHED
-            
-            #デバッグ用に必ずfailed
-            clustering_state = CLUSTERING_STATUS.FAILED
+            clustering_state = CLUSTERING_STATUS.FINISHED
         finally:
             
             # 初期化状態を更新
@@ -168,6 +164,7 @@ def execute_init_clustering(
             _, _ = execute_query(session=connect_session, query_text=update_query)
                 
     # 非同期実行
+    print(original_images_folder_path)
     background_tasks.add_task(run_clustering, by_clustering_id, by_chromadb_sentence_id,by_chromadb_image_id,project_id, original_images_folder_path)
     
     # 初期化状態を更新

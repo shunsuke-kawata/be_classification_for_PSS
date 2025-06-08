@@ -12,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
+from config import DEFAULT_IMAGE_PATH
 class InitClusteringManager:
     
     COHESION_THRESHOLD = 0.75
@@ -139,7 +140,6 @@ class InitClusteringManager:
                 result_clustering_uuid_dict[value['folder_id']]['data'] = value['data']
                 result_clustering_uuid_dict[value['folder_id']]['is_leaf']=True
         
-            
         print(f"2段階目 凝集度が低いものを画像特徴量でクラスタリング")
         #コサイン類似度で凝集度を判定する関数
         def _cohesion_cosine_similarity(vectors: list[float]) -> float:
@@ -150,38 +150,37 @@ class InitClusteringManager:
                 return 1.0
             total = np.sum(similarity_matrix) - n
             return total / (n * (n - 1))
+        count = 0
         
         for cluster_folder_id,value in result_clustering_uuid_dict.items():
             
             result_clustering_uuid_inner_dict = dict()
-            print(value['data'].keys())
             _clustering_id_keys = list(value['data'].keys())
+            count+=len(_clustering_id_keys)
             
             #クラスタ内の画像の文章データベースのIDを抽出
             target_sentence_ids = [clustering_id_dict[_clustering_id]['sentence_id'] for _clustering_id in _clustering_id_keys]
-            print('データベースアクセス')
+
             sentence_data_in_cluster = self._sentence_db.get_data_by_ids(ids=target_sentence_ids)
             
-            print('コサイン類似度出力')
             cohesion_cosine_similarity = _cohesion_cosine_similarity(vectors=sentence_data_in_cluster['embeddings'])
             #凝集度がすでに一定以上の場合以降の処理をスキップする
             if(cohesion_cosine_similarity>self.COHESION_THRESHOLD):
                 continue
             
             target_image_ids = [clustering_id_dict[_clustering_id]['image_id'] for _clustering_id in _clustering_id_keys]
+            print(len(target_image_ids),len(target_sentence_ids))
             
-            print('データベースアクセス')
             image_data_in_cluster = self.image_db.get_data_by_ids(target_image_ids)
-            
-            print('最適クラスタ数を取得')
-            inner_cluster_num, _ = self.get_optimal_cluster_num(embeddings=image_data_in_cluster['embeddings'])
-            
+            print(len(image_data_in_cluster['embeddings']))
+
+            inner_cluster_num, _ = self.get_optimal_cluster_num(embeddings=image_data_in_cluster['embeddings'],max_cluster_num=12)
             #結果としてクラスタ数が1以下の場合もスキップする
             if inner_cluster_num <=1:
                 continue
             
-            print('クラスタリング実行')
             image_embeddings_np = np.array(image_data_in_cluster['embeddings'])
+            print(len(image_embeddings_np))
             model = AgglomerativeClustering(n_clusters=inner_cluster_num)
             labels = model.fit_predict(image_embeddings_np)
             
@@ -195,39 +194,46 @@ class InitClusteringManager:
                 _clustering_id = image_id_dict[image_data_in_cluster['ids'][i]]['clustering_id']
                 tmp_result_inner_dict[label]['data'][_clustering_id] = image_data_in_cluster['metadatas'][i].path
             
-            print('json整形')
-            
             #結果用にjson成形
-            for value in tmp_result_dict.values():
-                result_clustering_uuid_inner_dict[value['folder_id']]=dict()
-                result_clustering_uuid_inner_dict[value['folder_id']]['data'] = value['data']
-                result_clustering_uuid_inner_dict[value['folder_id']]['is_leaf']=True
-                
+            for inner_value in tmp_result_inner_dict.values():
+                result_clustering_uuid_inner_dict[inner_value['folder_id']]=dict()
+                result_clustering_uuid_inner_dict[inner_value['folder_id']]['data'] = inner_value['data']
+                result_clustering_uuid_inner_dict[inner_value['folder_id']]['is_leaf']=True
                 
             result_clustering_uuid_dict[cluster_folder_id]['data']=result_clustering_uuid_inner_dict
             result_clustering_uuid_dict[cluster_folder_id]['is_leaf']=False
         
-        #JSON出力オプションがTrueの時クラスタリング結果をjsonとして出力
-        
+        # JSON出力オプションまたはフォルダ出力オプションがTrueの場合、output_base_pathをクリアして新たに作成
         if output_json or output_folder:
-            os.makedirs(self.output_base_path,exist_ok=True)
+            if self.output_base_path.exists():
+                shutil.rmtree(self.output_base_path)
+                os.makedirs(self.output_base_path, exist_ok=True)
+                
+        #フォルダ出力オプションがTrueの時クラスタリング結果をフォルダとして出力
+        if output_folder:
+            def copy_tree(node: dict, output_path: Path, images_folder_path: Path):
+                os.makedirs(output_path, exist_ok=True)
+                
+                if node['is_leaf']:
+                    for filename in node['data'].values():
+                        src = images_folder_path / Path(filename)
+                        dst = output_path / Path(filename)
+                        shutil.copy(src, dst)
+                else:
+                    for folder_id, child_node in node['data'].items():
+                        child_output_path = output_path / Path(folder_id)
+                        copy_tree(child_node, child_output_path, images_folder_path)
+                        
+            for _folder_id, value in result_clustering_uuid_dict.items():
+                output_path = self.output_base_path / Path(_folder_id)
+                copy_tree(value, output_path, self.images_folder_path)
+                
         if output_json:
             output_json_path = self._output_base_path / "result.json"
             with open(output_json_path, "w", encoding="utf-8") as f:
                 json.dump(result_clustering_uuid_dict, f, ensure_ascii=False, indent=2)
         
-        #フォルダ出力オプションがTrueの時クラスタリング結果をフォルダとして出力
-        if output_folder:
-            def copy_images(data:dict):
-                pass
-                
-            for key,value in result_clustering_uuid_dict.items():
-                output_path =self.output_base_path / Path(key)
-                os.makedirs(output_path)
-                is_leaf = value['is_leaf']
-                if is_leaf:
-                    pass
-                
+        return result_clustering_uuid_dict
 
 
 if __name__ == "__main__":
