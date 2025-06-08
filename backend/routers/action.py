@@ -80,7 +80,7 @@ def execute_init_clustering(
     original_images_folder_path = result_mappings["original_images_folder_path"]
     mongo_result_id = result_mappings["mongo_result_id"]
 
-    if init_clustering_state != CLUSTERING_STATUS.NOT_EXECUTED:
+    if init_clustering_state == CLUSTERING_STATUS.EXECUTING or init_clustering_state ==CLUSTERING_STATUS.FINISHED:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"message": "init clustering already started", "data": None}
@@ -114,17 +114,6 @@ def execute_init_clustering(
         by_clustering_id[cid] = {"sentence_id": sid, "image_id": iid}
         by_chromadb_sentence_id[sid] = {"clustering_id": cid, "image_id": iid}
         by_chromadb_image_id[iid] = {"clustering_id": cid, "sentence_id": sid}
-
-    # dictをjsonとしてファイルに出力
-    output_dir = Path(f"./{DEFAULT_OUTPUT_PATH}/{project_id}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / "by_clustering_id.json", "w", encoding="utf-8") as f:
-        json.dump(by_clustering_id, f, indent=2, ensure_ascii=False)
-    with open(output_dir / "by_chromadb_sentence_id.json", "w", encoding="utf-8") as f:
-        json.dump(by_chromadb_sentence_id, f, indent=2, ensure_ascii=False)
-    with open(output_dir / "by_chromadb_image_id.json", "w", encoding="utf-8") as f:
-        json.dump(by_chromadb_image_id, f, indent=2, ensure_ascii=False)
-    
     
     # バックグラウンド処理に渡す関数
     def run_clustering(cid_dict:dict,sid_dict:dict,iid_dict:dict,project_id:int, original_images_folder_path:str):
@@ -151,6 +140,7 @@ def execute_init_clustering(
                 output_json=True
             )
             
+            
             mongo_module = MongoDBManager()
             mongo_module.update_document(
                 collection_name='clustering_results',
@@ -163,7 +153,10 @@ def execute_init_clustering(
             
             clustering_state = CLUSTERING_STATUS.FAILED
         else:
-            clustering_state = CLUSTERING_STATUS.FINISHED
+            # clustering_state = CLUSTERING_STATUS.FINISHED
+            
+            #デバッグ用に必ずfailed
+            clustering_state = CLUSTERING_STATUS.FAILED
         finally:
             
             # 初期化状態を更新
