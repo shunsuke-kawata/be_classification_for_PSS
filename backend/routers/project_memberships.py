@@ -8,6 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProjectMembership
+from clustering.utils import Utils
 
 #分割したエンドポイントの作成
 project_memberships_endpoint = APIRouter()
@@ -34,7 +35,7 @@ def read_project_memberships(user_id=None, project_id=None):
             print(e)
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"invalid project_id", "data":None})
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE project_id='{id}';"
+        query_text =f"SELECT user_id, project_id, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE project_id='{id}';"
     elif(user_id is not None):
         try:
             id = int(user_id)
@@ -42,10 +43,10 @@ def read_project_memberships(user_id=None, project_id=None):
             print(e)
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"invalid project_id", "data":None})
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE user_id='{id}';"
+        query_text =f"SELECT user_id, project_id, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE user_id='{id}';"
     else:
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships;"
+        query_text =f"SELECT user_id, project_id,  mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships;"
         
     result,_ = execute_query(session=connect_session, query_text=query_text)
     
@@ -72,9 +73,11 @@ def create_project_membership(project_membership:NewProjectMembership):
     #バリデーションの実行
     if not(validate_data(project_membership, 'project_membership')):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
+
+    mongo_result_id = Utils.generate_uuid()
     
     #SQLの実行
-    query_text =f"INSERT INTO project_memberships(user_id, project_id) VALUES ('{project_membership.user_id}','{project_membership.project_id}');"
+    query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{project_membership.user_id}','{project_membership.project_id}','{mongo_result_id}');"
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
         return JSONResponse(status_code=status.HTTP_201_CREATED,content={"message": "succeeded to create project_membership", "data":None})
