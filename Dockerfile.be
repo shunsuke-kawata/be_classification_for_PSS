@@ -16,4 +16,6 @@ COPY ./backend/requirements.txt .
 RUN pip install --upgrade pip setuptools
 RUN pip install -r requirements.txt
 
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 ENTRYPOINT ["python", "server.py"]
