@@ -31,12 +31,19 @@ def get_init_clustering_result(mongo_result_id:str):
         return doc
     items = result
     items = [convert_objectid(doc) for doc in items]
-        
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={"message": "init clustering started in background", "data": result}
-    )
     
+    if(len(items)==1):
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "success", "data": items[0]}
+        )
+    else:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": "The data could not be uniquely identified.", "data": None}
+        )
+        
+        
 
 @action_endpoint.get("/action/clustering/init/{project_id}", tags=["action"], description="初期クラスタリングを実装する")
 def execute_init_clustering(
