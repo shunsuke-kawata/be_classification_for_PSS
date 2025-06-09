@@ -29,7 +29,7 @@ def read_projects(user_id=None):
 
     if user_id is None:
         query_text = """
-            SELECT id, name, description, init_clustering_state, root_folder_id, original_images_folder_path, owner_id
+            SELECT id, name, description,original_images_folder_path, owner_id
             FROM projects;
         """
     else:
@@ -38,6 +38,8 @@ def read_projects(user_id=None):
                    projects.original_images_folder_path, projects.owner_id,
                    projects.created_at,
                    projects.updated_at,
+                   project_memberships.init_clustering_state,
+                   project_memberships.mongo_result_id,
                    CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
             FROM projects
             LEFT JOIN project_memberships
@@ -66,7 +68,7 @@ def read_projects(user_id=None):
     400: {"description": "Bad Request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}
 })
-def read_project(project_id: str):
+def read_project(project_id: str,user_id=None):
     connect_session = create_connect_session()
     if connect_session is None:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
@@ -76,10 +78,25 @@ def read_project(project_id: str):
     except Exception:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "invalid project_id", "data": None})
 
-    query_text = f"""
-        SELECT id, name, description,original_images_folder_path, owner_id, created_at, updated_at
-        FROM projects WHERE id = {id};
-    """
+    if user_id is None:
+        query_text = f"""
+            SELECT id, name, description,original_images_folder_path, owner_id, created_at, updated_at
+            FROM projects WHERE id = {id};
+        """
+    else:
+        query_text = f"""
+            SELECT projects.id, projects.name, projects.description, 
+               projects.original_images_folder_path, projects.owner_id,
+               projects.created_at,
+               projects.updated_at,
+               project_memberships.init_clustering_state,
+               project_memberships.mongo_result_id,
+               CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
+            FROM projects
+            LEFT JOIN project_memberships
+            ON projects.id = project_memberships.project_id
+            WHERE projects.id = {id} AND project_memberships.user_id = {user_id};
+        """
 
     result, _ = execute_query(session=connect_session, query_text=query_text)
     if result is not None:
