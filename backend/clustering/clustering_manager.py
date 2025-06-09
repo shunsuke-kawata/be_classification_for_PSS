@@ -203,7 +203,7 @@ class InitClusteringManager:
             result_clustering_uuid_dict[cluster_folder_id]['data']=result_clustering_uuid_inner_dict
             result_clustering_uuid_dict[cluster_folder_id]['is_leaf']=False
         
-        print(f"3段階目 文章特徴量で上位階層でさらにクラスタリング")
+        print(f"3段階目 文章特徴量でさらに上位階層でクラスタリング")
         
         #上位階層クラスタリング用のdictを作成
         upper_sentence_dict = dict()
@@ -214,7 +214,13 @@ class InitClusteringManager:
             target_sentence_ids = [clustering_id_dict[id]['sentence_id'] for id in ids]
             upper_sentence_data = self._sentence_db.get_data_by_ids(ids=target_sentence_ids)
             
-            upper_embeddings_np = np.array(upper_sentence_data['embeddings'])
+            documents_data = upper_sentence_data['documents']
+            upper_sentence_document_embeddings = []
+            for document in documents_data:
+                upper_sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(''.join(document.get_split_document()[1:]))
+                upper_sentence_document_embeddings.append(upper_sentence_document_embedding)
+            
+            upper_embeddings_np = np.array(upper_sentence_document_embeddings)
              
             ave_upper_embeddings = np.average(upper_embeddings_np,axis=0).tolist()
             upper_sentence_dict[idx]={}
@@ -274,14 +280,8 @@ class InitClusteringManager:
         if output_json:
             output_json_path = self._output_base_path / "result.json"
             with open(output_json_path, "w", encoding="utf-8") as f:
-                json.dump(upper_result_clustering_uuid_dict, f, ensure_ascii=False, indent=2)
-    
-            output_json_path = self._output_base_path / "result_ttt.json"
-            with open(output_json_path, "w", encoding="utf-8") as f:
-                json.dump(result_id_dict_1, f, ensure_ascii=False, indent=2)
-            
+                json.dump(upper_result_clustering_uuid_dict, f, ensure_ascii=False, indent=2)        
         return upper_result_clustering_uuid_dict
-
 
 if __name__ == "__main__":
     cl_module = InitClusteringManager(
