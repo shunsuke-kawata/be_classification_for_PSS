@@ -83,3 +83,13 @@ INSERT INTO users (name, password, email, authority)
 VALUES 
 ('system', 'system', 'sys@sys.com', 1),
 ('user', 'user', 'user@user.com', 0);
+
+INSERT INTO projects (name, password, description, original_images_folder_path, owner_id) 
+VALUES 
+('project1', 'project1', 'project1', 'project1', 1),
+('project2', 'project2', 'project2', 'project2', 2);
+
+INSERT INTO project_memberships (user_id, project_id, init_clustering_state, mongo_result_id) 
+VALUES 
+(1, 1, 0, 'project1'),
+(2, 2, 0, 'project2');
