@@ -93,6 +93,39 @@ class InitClusteringManager:
         
         return best_k, float(best_score) if best_score >= 0 else (1, -1.0)
     
+    def _add_parent_ids(self, clustering_dict: dict, parent_id: str = None) -> dict:
+        """
+        全ての要素にparent_idを追加する再帰関数
+        
+        Args:
+            clustering_dict: クラスタリング結果の辞書
+            parent_id: 親要素のID（最上位階層の場合はNone）
+            
+        Returns:
+            parent_idが追加された辞書
+        """
+        result = {}
+        
+        for key, value in clustering_dict.items():
+            # 値が辞書の場合のみ処理
+            if isinstance(value, dict):
+                # 現在の要素のコピーを作成
+                new_value = value.copy()
+                
+                # parent_idを追加
+                new_value['parent_id'] = parent_id
+                
+                # dataフィールドがある場合、再帰的に処理
+                if 'data' in new_value and isinstance(new_value['data'], dict):
+                    new_value['data'] = self._add_parent_ids(new_value['data'], key)
+                
+                result[key] = new_value
+            else:
+                # 文字列やその他の値の場合はそのまま
+                result[key] = value
+        
+        return result
+
     def clustering(
         self, 
         sentence_db_data: dict[str, list], 
@@ -108,6 +141,13 @@ class InitClusteringManager:
         #結果を保持するdict
         result_clustering_uuid_dict = dict()
         sentence_embeddings_np = np.array(sentence_db_data['embeddings'])
+        
+        sentence_documents_data = np.array(sentence_db_data['documents'])
+        print(sentence_documents_data)
+        sentence_document_data_embeddings = []
+        for document in sentence_documents_data:
+            sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(''.join(document.get_split_document()[0]))
+            sentence_document_data_embeddings.append(sentence_document_embedding)
         
         print(f"1段階目 文章特徴量でクラスタリング")
         #クラスタ数が1以下の場合全てを同一のクラスタとして処理
@@ -218,6 +258,7 @@ class InitClusteringManager:
             upper_sentence_document_embeddings = []
             for document in documents_data:
                 upper_sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(''.join(document.get_split_document()[1:]))
+                # upper_sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(document.get_split_document()[1])
                 upper_sentence_document_embeddings.append(upper_sentence_document_embedding)
             
             upper_embeddings_np = np.array(upper_sentence_document_embeddings)
@@ -277,11 +318,120 @@ class InitClusteringManager:
                 output_path = self.output_base_path / Path(_folder_id)
                 copy_tree(value, output_path, self.images_folder_path)
                 
+        # 全体をまとめたフォルダ要素でラップ
+        overall_folder_id = Utils.generate_uuid()
+        
+        # 全体フォルダでラップしてからparent_idを追加
+        wrapped_result = {
+            overall_folder_id: {
+                "data": upper_result_clustering_uuid_dict,
+                "parent_id": None,
+                "is_leaf": False
+            }
+        }
+        
+        # 全体フォルダでラップした後にparent_idを追加
+        #フロント側で表示するデータが
+        wrapped_result = self._add_parent_ids(wrapped_result)
+        
+        #mongodbに登録するためのnode情報を作成する
+        all_nodes,_, _ = self.create_all_nodes(wrapped_result)
+        
+        
         if output_json:
             output_json_path = self._output_base_path / "result.json"
             with open(output_json_path, "w", encoding="utf-8") as f:
-                json.dump(upper_result_clustering_uuid_dict, f, ensure_ascii=False, indent=2)        
-        return upper_result_clustering_uuid_dict
+                json.dump(wrapped_result, f, ensure_ascii=False, indent=2)  
+            
+            output_json_path= self._output_base_path / "all_nodes.json"
+            with open(output_json_path, "w", encoding="utf-8") as f:
+                json.dump(all_nodes, f, ensure_ascii=False, indent=2)
+                
+        return wrapped_result,all_nodes
+    
+    
+    def create_folder_nodes(self,data, parent_id=None, result=None):
+        """
+        フォルダーノードを作成する
+        
+        Args:
+            data: JSONデータ
+            parent_id: 親フォルダーのID（最初のフォルダーはnull）
+            result: 結果を格納するリスト
+        
+        Returns:
+            list: フォルダーノードのリスト
+        """
+        if result is None:
+            result = []
+        
+        for folder_id, folder_info in data.items():
+            # フォルダーノードを作成
+            folder_node = {
+                "type": "folder",
+                "id": folder_id,
+                "name": folder_id,
+                "parent_id": parent_id,
+                "is_leaf": folder_info.get("is_leaf", False)
+            }
+            result.append(folder_node)
+            
+            # 子フォルダーが存在する場合、再帰的に処理
+            if "data" in folder_info and not folder_info.get("is_leaf", False):
+                self.create_folder_nodes(folder_info["data"], folder_id, result)
+        
+        return result
+
+    def create_file_nodes(self, data, parent_id=None, result=None):
+        """
+        ファイルノードを作成する（is_leafがTrueのフォルダー内のファイル用）
+        
+        Args:
+            data: JSONデータ
+            parent_id: 親フォルダーのID（最初のフォルダーはnull）
+            result: 結果を格納するリスト
+        
+        Returns:
+            list: ファイルノードのリスト
+        """
+        if result is None:
+            result = []
+        
+        for folder_id, folder_info in data.items():
+            # is_leafがTrueのフォルダー内のファイルを処理
+            if folder_info.get("is_leaf", False) and "data" in folder_info:
+                for file_id, file_name in folder_info["data"].items():
+                    # ファイルノードを作成
+                    file_node = {
+                        "type": "file",
+                        "id": file_id,
+                        "name": file_name,
+                        "parent_id": folder_id,
+                        "is_leaf": None
+                    }
+                    result.append(file_node)
+            
+            # 子フォルダーが存在する場合、再帰的に処理
+            if "data" in folder_info and not folder_info.get("is_leaf", False):
+                self.create_file_nodes(folder_info["data"], folder_id, result)
+        
+        return result
+
+    def create_all_nodes(self,data):
+        """
+        フォルダーノードとファイルノードを作成する
+        
+        Args:
+            data: JSONデータ
+        
+        Returns:
+            tuple: (フォルダーノードのリスト, ファイルノードのリスト, 全ノードのリスト)
+        """
+        folder_nodes = self.create_folder_nodes(data)
+        file_nodes = self.create_file_nodes(data)
+        all_nodes = folder_nodes + file_nodes
+        
+        return  all_nodes,folder_nodes, file_nodes
 
 if __name__ == "__main__":
     cl_module = InitClusteringManager(

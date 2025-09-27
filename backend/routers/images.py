@@ -185,8 +185,6 @@ async def upload_image(
         sentence_db_manager = ChromaDBManager("sentence_embeddings")
         image_db_manager = ChromaDBManager("image_embeddings")
         
-        # id_exists = sentence_db_manager.()
-        
         #生成されたキャプションから文章特徴量をデータベースに保存
         chromadb_sentence_id = sentence_db_manager.add_one(
             document=created_caption,

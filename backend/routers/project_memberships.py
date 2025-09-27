@@ -75,6 +75,7 @@ def create_project_membership(project_membership:NewProjectMembership):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
 
     mongo_result_id = Utils.generate_uuid()
+    print(mongo_result_id)
     
     #SQLの実行
     query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{project_membership.user_id}','{project_membership.project_id}','{mongo_result_id}');"

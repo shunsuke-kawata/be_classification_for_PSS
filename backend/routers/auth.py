@@ -1,4 +1,5 @@
 import json
+from clustering.utils import Utils
 from fastapi import APIRouter, HTTPException, status,Response
 import sys
 import os
@@ -83,9 +84,12 @@ def join(project_id:str,join_user:JoinUser):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to join", "data":None})
     
     project_pass_info = project_pass_info_list[0]
+    print(project_pass_info)
+    
+    mongo_result_id = Utils.generate_uuid()
     
     #SQLの実行
-    query_text =f"INSERT INTO project_memberships(user_id, project_id) VALUES ('{join_user.user_id}','{project_pass_info['id']}');"
+    query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{join_user.user_id}','{project_pass_info['id']}','{mongo_result_id}');"
     
     result,_ = execute_query(session=connect_session,query_text=query_text)
     if not(result is None):
