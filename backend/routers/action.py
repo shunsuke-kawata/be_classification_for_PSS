@@ -261,196 +261,42 @@ def move_clustering_items(
         content={"message": "success", "data": None}
     )
     
-    items_to_move = {}
+
+@action_endpoint.delete("/action/folders/{mongo_result_id}", tags=["action"], description="指定されたフォルダを削除")
+async def delete_folders(mongo_result_id: str, sources: List[str] = Query(...)):
+    """
+    指定されたフォルダIDリストを受け取り、IDを出力する
     
-    if not items_to_move:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={
-                "message": f"No {source_type} found to move", 
-                "data": {
-                    "searched_ids": sources
-                }
+    Args:
+        mongo_result_id (str): MongoDBの結果ID
+        sources (List[str]): 削除対象のフォルダIDリスト
+    
+    Returns:
+        JSONResponse: 500エラー
+    """
+    print(f"🗂️ delete_folders呼び出し: mongo_result_id={mongo_result_id}")
+    print(f"📋 受け取ったフォルダIDリスト (sources): {sources}")
+    print(f"📊 削除対象フォルダ数: {len(sources)}")
+    
+
+    result_manager = ResultManager(mongo_result_id)
+    # フォルダIDの詳細を出力
+
+    result_manager.remove_folders_from_result(sources)
+        
+    
+    print("📝 この処理は開発中のため、IDの出力のみを行い500エラーを返します")
+    
+    # 500エラーを返す
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "message": "Internal Server Error - Folder deletion not implemented",
+            "data": {
+                "mongo_result_id": mongo_result_id,
+                "received_folder_ids": sources,
+                "folder_count": len(sources),
+                "error": "Function is in development mode - only logging IDs"
             }
-        )
-        if source_type == "folders":
-            print(f"   - フォルダ: {key}")
-            print(f"     - is_leaf: {value.get('is_leaf')}")
-            print(f"     - parent_id: {value.get('parent_id')}")
-            if "data" in value:
-                print(f"     - 子要素数: {len(value['data'])}")
-                print(f"     - 子要素: {list(value['data'].keys())}")
-        else:
-            print(f"   - 画像: {key}")
-    
-    # 挿入後の予想状態を表示
-    print(f"🔮 挿入後の予想状態:")
-    new_destination_data = destination_data.copy()
-    new_destination_data.update(items_to_move)
-    print(f"   - 挿入後の要素数: {len(new_destination_data)}")
-    print(f"   - 挿入後の要素: {list(new_destination_data.keys())}")
-        
-    # 移動先に同じ名前の要素が存在しないかチェック
-    print(f"🔍 移動先の名前重複チェック中...")
-    
-    if "data" not in destination_node:
-        destination_node["data"] = {}
-    
-    conflicting_items = []
-    for key in items_to_move.keys():
-        if key in destination_node["data"]:
-            conflicting_items.append(key)
-    
-    if conflicting_items:
-        print(f"❌ エラー: 移動先に同じ名前の要素が既に存在します: {conflicting_items}")
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": f"Items with same names already exist in destination: {conflicting_items}", "data": None}
-        )
-    
-    print(f"✅ 名前重複チェック完了: 重複なし")
-    
-    # 実際のMongoDBデータ書き換え処理
-    print(f"💾 MongoDBデータ書き換え処理開始...")
-    
-    # ロールバック用の元データを保持
-    original_result_structure = copy.deepcopy(result_structure)
-    print(f"📋 ロールバック用の元データを保持しました")
-    
-    def rollback_data():
-        """データを元の状態に戻す"""
-        try:
-            print(f"🔄 ロールバック処理開始...")
-            result_manager._mongo_module.update_document(
-                collection_name='clustering_results',
-                query={"mongo_result_id": mongo_result_id},
-                update={"result": original_result_structure}
-            )
-            print(f"✅ ロールバック完了: データを元の状態に復元しました")
-        except Exception as e:
-            print(f"❌ ロールバックエラー: {e}")
-    
-    try:
-        # 1. 挿入するデータの保持
-        print(f"📦 挿入するデータを保持中...")
-        items_to_insert = copy.deepcopy(items_to_move)
-        print(f"   - 保持したデータ数: {len(items_to_insert)}個")
-        print(f"   - 保持したデータ: {list(items_to_insert.keys())}")
-        
-        # 2. 挿入先にデータの追加
-        print(f"📥 挿入先にデータを追加中...")
-        print(f"   - 挿入先ID: {destination_id}")
-        print(f"   - 挿入先の現在の状態: {destination_node.get('is_leaf')}")
-        
-        # 既存のdestination_nodeを使用（再取得は不要）
-        if "data" not in destination_node:
-            destination_node["data"] = {}
-            print(f"   - dataフィールドを初期化しました")
-        
-        print(f"   - 挿入前の要素数: {len(destination_node['data'])}")
-        print(f"   - 挿入前の要素: {list(destination_node['data'].keys())}")
-        
-        # 移動先に要素を追加
-        for key, value in items_to_insert.items():
-            destination_node["data"][key] = value
-            print(f"   ✅ 追加: {key} → {destination_id}")
-        
-        print(f"   - 挿入後の要素数: {len(destination_node['data'])}")
-        print(f"   - 挿入後の要素: {list(destination_node['data'].keys())}")
-        print(f"✅ 挿入先への追加完了: {len(items_to_insert)}個の要素を追加")
-        
-        # 3. 挿入元のデータを削除
-        print(f"🗑️  挿入元のデータを削除中...")
-        
-        def remove_items_from_source(node_dict, target_ids, item_type):
-            """移動元から要素を削除"""
-            removed_count = 0
-            for key, value in list(node_dict.items()):
-                if key in target_ids:
-                    if item_type == "folders" and isinstance(value, dict):
-                        del node_dict[key]
-                        removed_count += 1
-                        print(f"   ✅ 削除: {key} (フォルダ)")
-                    elif item_type == "images" and isinstance(value, str):
-                        del node_dict[key]
-                        removed_count += 1
-                        print(f"   ✅ 削除: {key} (画像)")
-                
-                # 再帰的に検索・削除
-                if isinstance(value, dict) and "data" in value:
-                    sub_removed = remove_items_from_source(value["data"], target_ids, item_type)
-                    removed_count += sub_removed
-            
-            return removed_count
-        
-        removed_count = remove_items_from_source(result_structure, sources, source_type)
-        print(f"✅ 挿入元からの削除完了: {removed_count}個の要素を削除")
-        
-        # 削除後の挿入先の状態を確認
-        print(f"🔍 削除後の挿入先の状態確認...")
-        print(f"   - 挿入先の要素数: {len(destination_node['data'])}")
-        print(f"   - 挿入先の要素: {list(destination_node['data'].keys())}")
-        
-        json.dump(result_structure, open("c.json", "w"), indent=4)
-        # 4. MongoDBに保存
-        print(f"💾 MongoDBに保存中...")
-        result_manager._mongo_module.update_document(
-            collection_name='clustering_results',
-            query={"mongo_result_id": mongo_result_id},
-            update={"result": result_structure}
-        )
-        print(f"✅ MongoDB保存完了")
-        
-        # 保存後の確認
-        print(f"🔍 保存後の確認中...")
-        saved_result = result_manager._mongo_module.find_one_document(
-            collection_name='clustering_results',
-            query={"mongo_result_id": mongo_result_id}
-        )
-        if not saved_result:
-            print(f"❌ エラー: 保存後の確認でデータが見つかりません")
-            raise Exception("Data not found after save")
-        
-        saved_structure = saved_result.get("result", {})
-        print(f"   - 保存されたデータの要素数: {len(saved_structure)}")
-        print(f"   - 保存されたデータの要素: {list(saved_structure.keys())}")
-        
-        # 5. レスポンスの返却
-        print(f"✅ すべての処理が完了しました")
-        print(f"   - 移動対象数: {len(items_to_insert)}個")
-        print(f"   - 移動タイプ: {source_type}")
-        print(f"   - 移動先: {destination_folder}")
-        print(f"   - 移動対象ID: {list(items_to_insert.keys())}")
-        print(f"   - 削除数: {removed_count}個")
-        
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "message": f"Successfully moved {len(items_to_insert)} {source_type} to '{destination_folder}'",
-                "data": {
-                    "moved_items": list(items_to_insert.keys()),
-                    "destination_folder": destination_folder,
-                    "source_type": source_type,
-                    "moved_count": len(items_to_insert),
-                    "removed_count": removed_count,
-                    "operation_completed": True
-                }
-            }
-        )
-        
-    except Exception as e:
-        print(f"❌ 処理中にエラーが発生しました: {e}")
-        print(f"🔄 ロールバック処理を実行します...")
-        rollback_data()
-        
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "message": f"Operation failed and rolled back: {str(e)}",
-                "data": {
-                    "error": str(e),
-                    "rolled_back": True,
-                    "original_state_restored": True
-                }
-            }
-        )
+        }
+    )

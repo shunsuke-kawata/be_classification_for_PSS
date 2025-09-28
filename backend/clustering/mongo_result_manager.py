@@ -267,3 +267,106 @@ class ResultManager:
             {"mongo_result_id": self._mongo_result_id},
             {"$unset": {source_data_path: ""}}
         )
+
+    def remove_node_from_all_nodes(self, node_id: str) -> bool:
+        """
+        all_nodesから指定されたノードを削除する
+        
+        Args:
+            node_id (str): 削除するノードのID
+            
+        Returns:
+            bool: 削除に成功したかどうか
+        """
+        try:
+            # all_nodesから該当ノードを削除
+            all_nodes_path = f"all_nodes.{node_id}"
+            
+            collection = self._mongo_module.get_collection(self._clustering_results)
+            result = collection.update_one(
+                {"mongo_result_id": self._mongo_result_id},
+                {"$unset": {all_nodes_path: ""}}
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            print(f"❌ all_nodesからノード削除中にエラー: {e}")
+            return False
+
+    def remove_folders_from_result(self, folder_ids: List[str]) -> bool:
+        """
+        resultから指定された複数のフォルダを削除する
+        
+        Args:
+            folder_ids (List[str]): 削除するフォルダのIDの配列
+            
+        Returns:
+            bool: 全ての削除に成功したかどうか
+        """
+        try:
+            all_success = True
+            
+            # 各フォルダに対して削除処理を実行
+            for folder_id in folder_ids:
+                success = self._perform_folder_removal(folder_id)
+                if not success:
+                    all_success = False
+                    print(f"⚠️ フォルダ {folder_id} の削除に失敗しました")
+            
+            return all_success
+            
+        except Exception as e:
+            print(f"❌ 複数フォルダ削除中にエラー: {e}")
+            return False
+
+    def _perform_folder_removal(self, folder_id: str) -> bool:
+        """
+        単体のフォルダをresultから削除する実際の処理
+        
+        Args:
+            folder_id (str): 削除するフォルダのID
+            
+        Returns:
+            bool: 削除に成功したかどうか
+        """
+        try:
+            # 親フォルダのパスを取得
+            parents = self.get_parents(folder_id)
+            print(parents)
+            
+            if not parents or len(parents) <= 1:
+                # トップレベルフォルダの場合（ルート直下）
+                result_path = f"result.{folder_id}"
+            else:
+                # 子フォルダの場合
+                # parents[:-1] で親フォルダまでのパスを取得（最後の自分自身を除く）
+
+                result_path = f"result.{'.data.'.join(parents)}"
+            
+            print(f"🗂️ フォルダ削除パス: {result_path}")
+            
+            # PyMongoの$unsetオペレータを使用してフィールドを削除
+            collection = self._mongo_module.get_collection(self._clustering_results)
+            result = collection.update_one(
+                {"mongo_result_id": self._mongo_result_id},  # フィルタ条件
+                {"$unset": {result_path: ""}}                # 削除操作
+            )
+            
+            success = result.modified_count > 0
+            if success:
+                print(f"✅ フォルダ {folder_id} を正常に削除しました")
+            else:
+                print(f"⚠️ フォルダ {folder_id} の削除で変更がありませんでした")
+                
+            return success
+            
+        except Exception as e:
+            print(f"❌ フォルダ {folder_id} の削除中にエラー: {e}")
+            return False
+
+    def commit_changes(self) -> None:
+        """
+        変更をコミットする（現在は何もしないが、将来的に必要に応じて実装）
+        """
+        pass

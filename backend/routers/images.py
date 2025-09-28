@@ -4,7 +4,11 @@ import mimetypes
 import os
 import sys
 import json
-from fastapi import APIRouter, Response, UploadFile, File, Form, status
+import asyncio
+import time
+from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import APIRouter, Response, UploadFile, File, Form, status, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 
 current_dir = os.path.dirname(__file__)  # = subfolder/
@@ -25,6 +29,174 @@ from clustering.embeddings_manager.sentence_embeddings_manager import SentenceEm
 from clustering.utils import Utils
 
 images_endpoint = APIRouter()
+
+# アップロード状況を管理するディクショナリ
+upload_status_cache = {}
+
+class UploadResult:
+    def __init__(self, filename: str, success: bool, message: str, data: dict = None, error_type: str = None):
+        self.filename = filename
+        self.success = success
+        self.message = message
+        self.data = data or {}
+        self.error_type = error_type
+        self.timestamp = datetime.now().isoformat()
+
+def validate_image_file(file: UploadFile) -> tuple[bool, str]:
+    """
+    画像ファイルの妥当性を検証
+    """
+    # ファイル名チェック
+    if not file.filename:
+        return False, "ファイル名が空です"
+    
+    # ファイルサイズチェック（例: 10MB制限）
+    if hasattr(file, 'size') and file.size > 10 * 1024 * 1024:
+        return False, "ファイルサイズが10MBを超えています"
+    
+    # 拡張子チェック
+    allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        return False, f"サポートされていないファイル形式です: {file_ext}"
+    
+    return True, "OK"
+
+async def process_single_upload(
+    project_id: int, 
+    uploaded_user_id: int, 
+    file: UploadFile,
+    delay: float = 0.0
+) -> UploadResult:
+    """
+    単一画像のアップロード処理（非同期）
+    """
+    if delay > 0:
+        await asyncio.sleep(delay)
+    
+    start_time = time.time()
+    filename = file.filename
+    
+    try:
+        # ファイル妥当性チェック
+        is_valid, validation_message = validate_image_file(file)
+        if not is_valid:
+            return UploadResult(filename, False, validation_message, error_type="ValidationError")
+
+        connect_session = create_connect_session()
+        if connect_session is None:
+            return UploadResult(filename, False, "データベース接続失敗", error_type="DatabaseConnectionError")
+
+        # プロジェクトのoriginal_images_folder_pathを取得
+        query_text = f"""
+            SELECT original_images_folder_path FROM projects WHERE id = {project_id};
+        """
+        result, _ = execute_query(connect_session, query_text)
+        
+        if not result or result.rowcount == 0:
+            return UploadResult(filename, False, "プロジェクトが見つかりません", error_type="ProjectNotFoundError")
+
+        original_images_folder_path = result.mappings().first()["original_images_folder_path"]
+        save_dir = Path(DEFAULT_IMAGE_PATH) / original_images_folder_path
+        os.makedirs(save_dir, exist_ok=True)
+
+        contents = await file.read()
+        filename_without_ext, _ = os.path.splitext(filename)
+        png_path = f"{filename_without_ext}.png"
+        escaped_png_path = png_path.replace("'", "''")  # SQLインジェクション対策
+
+        # 同名画像が既に存在するか確認（DB + ファイルシステム）
+        check_query = f"""
+            SELECT id FROM images WHERE name = '{escaped_png_path}' AND project_id = {project_id};
+        """
+        result, _ = execute_query(connect_session, check_query)
+        
+        save_path = save_dir / png_path
+        file_exists_in_fs = save_path.exists()
+        
+        if (result and result.rowcount > 0) or file_exists_in_fs:
+            error_detail = []
+            if result and result.rowcount > 0:
+                error_detail.append("データベースに存在")
+            if file_exists_in_fs:
+                error_detail.append("ファイルシステムに存在")
+            
+            return UploadResult(
+                filename, 
+                False, 
+                f"同名の画像が既に存在します ({', '.join(error_detail)})", 
+                {"conflict_sources": error_detail},
+                error_type="ConflictError"
+            )
+
+        # 画像をPNGに変換して保存
+        png_bytes = image2png(contents)
+        with open(save_path, "wb") as f:
+            f.write(png_bytes)
+
+        # 仮のキャプション生成
+        is_created, created_caption = Utils.get_exmaple_caption(png_path)
+
+        # ベクトルDBへ登録
+        sentence_db_manager = ChromaDBManager("sentence_embeddings")
+        image_db_manager = ChromaDBManager("image_embeddings")
+        
+        # 生成されたキャプションから文章特徴量をデータベースに保存
+        chromadb_sentence_id = sentence_db_manager.add_one(
+            document=created_caption,
+            metadata=ChromaDBManager.ChromaMetaData(
+                path=png_path,
+                document=created_caption,
+                is_success=is_created
+            ),
+            embeddings=SentenceEmbeddingsManager.sentence_to_embedding(created_caption)
+        )
+        
+        # 保存された画像から画像特徴量をデータベースに保存
+        chromadb_image_id = image_db_manager.add_one(
+            document=created_caption,
+            metadata=ChromaDBManager.ChromaMetaData(
+                path=png_path,
+                document=created_caption,
+                is_success=is_created
+            ),
+            embeddings=ImageEmbeddingsManager.image_to_embedding(save_path)
+        )
+        
+        is_created_for_sql = 'TRUE' if is_created else 'FALSE'
+        escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
+
+        clustering_id = Utils.generate_uuid()
+        insert_query = f"""
+            INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id, chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{chromadb_sentence_id}', '{chromadb_image_id}', '{uploaded_user_id}');
+        """
+        result, _ = execute_query(connect_session, insert_query)
+
+        if result:
+            processing_time = round(time.time() - start_time, 2)
+            return UploadResult(
+                filename, 
+                True, 
+                "アップロード成功", 
+                {
+                    "clustering_id": clustering_id,
+                    "chromadb_sentence_id": chromadb_sentence_id,
+                    "chromadb_image_id": chromadb_image_id,
+                    "processing_time": processing_time
+                }
+            )
+        else:
+            return UploadResult(filename, False, "データベース挿入失敗", error_type="DatabaseInsertError")
+
+    except Exception as e:
+        return UploadResult(
+            filename, 
+            False, 
+            f"予期しないエラーが発生: {str(e)}", 
+            {"error_detail": str(e)},
+            error_type=type(e).__name__
+        )
 
 # 画像一覧取得（指定されたプロジェクトIDに紐づく画像を返す）
 @images_endpoint.get('/images', tags=["images"], description="画像一覧を取得", responses={
@@ -136,103 +308,136 @@ async def upload_image(
     uploaded_user_id: int = Form(...),
     file: UploadFile = File(...)
 ):
-    connect_session = create_connect_session()
-    if connect_session is None:
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
-
-    try:
-
-        # プロジェクトのoriginal_images_folder_pathを取得
-        query_text = f"""
-            SELECT original_images_folder_path FROM projects WHERE id = {project_id};
-        """
-        result, _ = execute_query(connect_session, query_text)
-        
-        # プロジェクトが存在しない場合の処理
-        if not result or result.rowcount == 0:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "project not found", "data": None})
-
-        original_images_folder_path = result.mappings().first()["original_images_folder_path"]
-        save_dir = Path(DEFAULT_IMAGE_PATH) / original_images_folder_path
-        os.makedirs(save_dir, exist_ok=True)
-
-        contents = await file.read()
-        filename, _ = os.path.splitext(file.filename)
-        png_path = f"{filename}.png"
-        escaped_png_path = png_path.replace("'", "''")  # SQLインジェクション対策
-
-        # 同名画像が既に存在するか確認
-        check_query = f"""
-            SELECT id FROM images WHERE name = '{escaped_png_path}' AND project_id = {project_id};
-        """
-        result, _ = execute_query(connect_session, check_query)
-        if result and result.rowcount > 0:
-            return JSONResponse(
-                status_code=status.HTTP_409_CONFLICT,
-                content={"message": "image with the same name already exists in this project", "data": None}
-            )
-
-        # 画像をPNGに変換して保存
-        png_bytes = image2png(contents)
-        save_path = save_dir / png_path
-        with open(save_path, "wb") as f:
-            f.write(png_bytes)
-
-        # 仮のキャプション生成
-        is_created, created_caption = Utils.get_exmaple_caption(png_path)
-
-        # ベクトルDBへ登録
-        sentence_db_manager = ChromaDBManager("sentence_embeddings")
-        image_db_manager = ChromaDBManager("image_embeddings")
-        
-        #生成されたキャプションから文章特徴量をデータベースに保存
-        chromadb_sentence_id = sentence_db_manager.add_one(
-            document=created_caption,
-            metadata=ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=created_caption,
-                is_success=is_created
-            ),
-            embeddings=SentenceEmbeddingsManager.sentence_to_embedding(created_caption)
-        )
-        
-        #保存された画像から画像特徴量をデータベースに保存
-        chromadb_image_id = image_db_manager.add_one(
-            document=created_caption,
-            metadata=ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=created_caption,
-                is_success=is_created
-            ),
-            embeddings=ImageEmbeddingsManager.image_to_embedding(save_path)
-        )
-        
-        is_created_for_sql = 'TRUE' if is_created else 'FALSE'
-        escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
-
-        clustering_id = Utils.generate_uuid()
-        insert_query = f"""
-            INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id,chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}','{chromadb_sentence_id}','{chromadb_image_id}', '{uploaded_user_id}');
-        """
-        result, _ = execute_query(connect_session, insert_query)
-
-        if result:
-            return JSONResponse(
-                status_code=status.HTTP_201_CREATED,
-                content={"message": "succeeded to upload image", "data": {"chromadb_sentence_id": chromadb_sentence_id,"chromadb_image_id":chromadb_image_id}}
-            )
-        else:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"message": "failed to insert into DB", "data": None}
-            )
-
-    except Exception as e:
-        print(e)
+    """
+    単一画像のアップロード（互換性維持のため）
+    """
+    result = await process_single_upload(project_id, uploaded_user_id, file)
+    
+    if result.success:
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"message": f"upload failed: {str(e)}", "data": None}
+            status_code=status.HTTP_201_CREATED,
+            content={"message": result.message, "data": result.data}
+        )
+    else:
+        status_code = status.HTTP_409_CONFLICT if result.error_type == "ConflictError" else status.HTTP_400_BAD_REQUEST
+        if result.error_type in ["DatabaseConnectionError", "DatabaseInsertError"]:
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        return JSONResponse(
+            status_code=status_code,
+            content={"message": result.message, "data": result.data}
+        )
+
+# バッチアップロード用エンドポイント
+@images_endpoint.post('/images/batch', tags=["images"], description="複数画像の並列アップロード", responses={
+    200: {"description": "Batch upload completed", "model": CustomResponseModel},
+    400: {"description": "Bad Request", "model": CustomResponseModel},
+    500: {"description": "Internal Server Error", "model": CustomResponseModel}
+})
+async def batch_upload_images(
+    project_id: int = Form(...),
+    uploaded_user_id: int = Form(...),
+    files: List[UploadFile] = File(...),
+    max_concurrent: int = Form(default=3),  # 最大同時実行数
+    upload_delay: float = Form(default=0.1)  # アップロード間隔（秒）
+):
+    """
+    複数画像の並列アップロード
+    - max_concurrent: 最大同時実行数（デフォルト3）
+    - upload_delay: 各アップロード間の遅延時間（デフォルト0.1秒）
+    """
+    if not files:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": "ファイルが指定されていません", "data": None}
+        )
+    
+    if len(files) > 50:  # 最大50ファイルまで
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"message": "一度にアップロードできるファイル数は50個までです", "data": None}
+        )
+    
+    # セマフォで同時実行数を制限
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def limited_upload(file: UploadFile, index: int) -> UploadResult:
+        async with semaphore:
+            delay = index * upload_delay  # インデックスに応じて遅延
+            return await process_single_upload(project_id, uploaded_user_id, file, delay)
+    
+    start_time = time.time()
+    
+    # 並列でアップロード処理を実行
+    tasks = [limited_upload(file, i) for i, file in enumerate(files)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # 結果を集計
+    success_count = 0
+    failure_count = 0
+    success_results = []
+    failure_results = []
+    
+    for result in results:
+        if isinstance(result, Exception):
+            failure_count += 1
+            failure_results.append({
+                "filename": "unknown",
+                "error": str(result),
+                "error_type": type(result).__name__
+            })
+        elif isinstance(result, UploadResult):
+            if result.success:
+                success_count += 1
+                success_results.append({
+                    "filename": result.filename,
+                    "data": result.data
+                })
+            else:
+                failure_count += 1
+                failure_results.append({
+                    "filename": result.filename,
+                    "message": result.message,
+                    "error_type": result.error_type,
+                    "data": result.data
+                })
+    
+    total_time = round(time.time() - start_time, 2)
+    
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "message": f"バッチアップロード完了: 成功 {success_count}件, 失敗 {failure_count}件",
+            "data": {
+                "total_files": len(files),
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "total_processing_time": total_time,
+                "settings": {
+                    "max_concurrent": max_concurrent,
+                    "upload_delay": upload_delay
+                },
+                "success_results": success_results,
+                "failure_results": failure_results
+            }
+        }
+    )
+
+# アップロード進捗状況取得用エンドポイント（将来的に使用）
+@images_endpoint.get('/images/upload-status/{batch_id}', tags=["images"], description="バッチアップロードの進捗状況を取得")
+async def get_upload_status(batch_id: str):
+    """
+    バッチアップロードの進捗状況を取得
+    """
+    if batch_id in upload_status_cache:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": "進捗状況を取得しました", "data": upload_status_cache[batch_id]}
+        )
+    else:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"message": "指定されたバッチIDが見つかりません", "data": None}
         )
 
 # 画像削除
