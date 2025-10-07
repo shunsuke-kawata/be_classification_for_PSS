@@ -265,38 +265,75 @@ def move_clustering_items(
 @action_endpoint.delete("/action/folders/{mongo_result_id}", tags=["action"], description="指定されたフォルダを削除")
 async def delete_folders(mongo_result_id: str, sources: List[str] = Query(...)):
     """
-    指定されたフォルダIDリストを受け取り、IDを出力する
+    指定されたフォルダIDリストを受け取り、結果から削除する
     
     Args:
         mongo_result_id (str): MongoDBの結果ID
         sources (List[str]): 削除対象のフォルダIDリスト
     
     Returns:
-        JSONResponse: 500エラー
+        JSONResponse: 削除処理の結果
     """
-    print(f"🗂️ delete_folders呼び出し: mongo_result_id={mongo_result_id}")
-    print(f"📋 受け取ったフォルダIDリスト (sources): {sources}")
-    print(f"📊 削除対象フォルダ数: {len(sources)}")
-    
-
-    result_manager = ResultManager(mongo_result_id)
-    # フォルダIDの詳細を出力
-
-    result_manager.remove_folders_from_result(sources)
+    try:
+        # 入力バリデーション
+        if not mongo_result_id or not mongo_result_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "mongo_result_id is required"}
+            )
         
-    
-    print("📝 この処理は開発中のため、IDの出力のみを行い500エラーを返します")
-    
-    # 500エラーを返す
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "message": "Internal Server Error - Folder deletion not implemented",
-            "data": {
-                "mongo_result_id": mongo_result_id,
-                "received_folder_ids": sources,
-                "folder_count": len(sources),
-                "error": "Function is in development mode - only logging IDs"
+        if not sources or len(sources) == 0:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "sources parameter is required and must contain at least one folder ID"}
+            )
+        
+        print(f"🗂️ delete_folders呼び出し: mongo_result_id={mongo_result_id}")
+        print(f"📋 受け取ったフォルダIDリスト (sources): {sources}")
+        print(f"📊 削除対象フォルダ数: {len(sources)}")
+        
+        # ResultManagerを初期化
+        result_manager = ResultManager(mongo_result_id)
+        
+        # フォルダを結果から削除
+        is_success = result_manager.remove_folders_from_result(sources)
+        
+        if is_success:
+            print(f"✅ フォルダ削除成功: {len(sources)}個のフォルダを削除しました")
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "message": "success", 
+                    "data": {
+                        "deleted_folder_count": len(sources),
+                        "deleted_folders": sources
+                    }
+                }
+            )
+        else:
+            print(f"❌ フォルダ削除失敗: remove_folders_from_result returned False")
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": "Failed to delete folders from result",
+                    "data": {
+                        "mongo_result_id": mongo_result_id,
+                        "attempted_folder_ids": sources,
+                        "error": "remove_folders_from_result operation failed"
+                    }
+                }
+            )
+            
+    except Exception as e:
+        print(f"❌ delete_folders処理中にエラーが発生: {str(e)}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "message": "Internal server error occurred during folder deletion",
+                "data": {
+                    "mongo_result_id": mongo_result_id,
+                    "attempted_folder_ids": sources,
+                    "error": str(e)
+                }
             }
-        }
-    )
+        )
