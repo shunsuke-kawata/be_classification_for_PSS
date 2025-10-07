@@ -153,12 +153,14 @@ class InitClusteringManager:
         #クラスタ数が1以下の場合全てを同一のクラスタとして処理
         if(cluster_num<=1):
             folder_id = Utils.generate_uuid()
-            result_clustering_uuid_dict[0] = {folder_id:{}}
+            result_clustering_uuid_dict[folder_id] = {}
+            result_clustering_uuid_dict[folder_id]['data'] = {}
             
             for idx,_sentence_id in enumerate(sentence_db_data['ids']):
                 _clustering_id = sentence_id_dict[_sentence_id]['clustering_id']
                 result_clustering_uuid_dict[folder_id]['data'][_clustering_id]= sentence_db_data['metadatas'][idx].path
-                result_clustering_uuid_dict[folder_id]['is_leaf']=True
+            result_clustering_uuid_dict[folder_id]['is_leaf']=True
+            result_clustering_uuid_dict[folder_id]['name']=folder_id
         else:  
             # 通常通りクラスタリング
             model = AgglomerativeClustering(n_clusters=cluster_num)
@@ -180,6 +182,7 @@ class InitClusteringManager:
                 result_clustering_uuid_dict[value['folder_id']]=dict()
                 result_clustering_uuid_dict[value['folder_id']]['data'] = value['data']
                 result_clustering_uuid_dict[value['folder_id']]['is_leaf']=True
+                result_clustering_uuid_dict[value['folder_id']]['name']=value['folder_id']
         
         print(f"2段階目 凝集度が低いものを画像特徴量でクラスタリング")
         #コサイン類似度で凝集度を判定する関数
@@ -239,9 +242,11 @@ class InitClusteringManager:
                 result_clustering_uuid_inner_dict[inner_value['folder_id']]=dict()
                 result_clustering_uuid_inner_dict[inner_value['folder_id']]['data'] = inner_value['data']
                 result_clustering_uuid_inner_dict[inner_value['folder_id']]['is_leaf']=True
+                result_clustering_uuid_inner_dict[inner_value['folder_id']]['name']=inner_value['folder_id']
                 
             result_clustering_uuid_dict[cluster_folder_id]['data']=result_clustering_uuid_inner_dict
             result_clustering_uuid_dict[cluster_folder_id]['is_leaf']=False
+            result_clustering_uuid_dict[cluster_folder_id]['name']=cluster_folder_id
         
         print(f"3段階目 文章特徴量でさらに上位階層でクラスタリング")
         
@@ -281,7 +286,7 @@ class InitClusteringManager:
         for idx,label in enumerate(labels):
             upper_result_dict[label]['data'].append(upper_sentence_dict[idx]['folder_id'])
         
-        upper_result_clustering_uuid_dict = {value["folder_id"]: {"is_leaf": False, "data": {}}for value in upper_result_dict.values()}
+        upper_result_clustering_uuid_dict = {value["folder_id"]: {"is_leaf": False, "data": {}, "name": value["folder_id"]}for value in upper_result_dict.values()}
         for value in upper_result_dict.values():
             upper_folder_id = value['folder_id']
             
@@ -289,9 +294,11 @@ class InitClusteringManager:
             if(len(value['data'])==1):
                 upper_result_clustering_uuid_dict[upper_folder_id]['data']=result_clustering_uuid_dict[value['data'][0]]['data']
                 upper_result_clustering_uuid_dict[upper_folder_id]['is_leaf']=result_clustering_uuid_dict[value['data'][0]]['is_leaf']
+                upper_result_clustering_uuid_dict[upper_folder_id]['name']=upper_folder_id
             else:
                 for _inner_folder_id in value['data']:
                     upper_result_clustering_uuid_dict[upper_folder_id]['data'][_inner_folder_id]= result_clustering_uuid_dict[_inner_folder_id]
+                upper_result_clustering_uuid_dict[upper_folder_id]['name']=upper_folder_id
                 
         # JSON出力オプションまたはフォルダ出力オプションがTrueの場合、output_base_pathをクリアして新たに作成
         if output_json or output_folder:
@@ -326,7 +333,8 @@ class InitClusteringManager:
             overall_folder_id: {
                 "data": upper_result_clustering_uuid_dict,
                 "parent_id": None,
-                "is_leaf": False
+                "is_leaf": False,
+                "name": overall_folder_id
             }
         }
         
