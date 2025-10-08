@@ -73,16 +73,23 @@ class ResultManager:
                       例: [root_id, parent_folder_id, ..., target_node_id]
         """
         print(f"=== ResultManager.get_parents() デバッグ ===")
-
+        print(f"🔍 target_node_id: {target_node_id}")
                 
         all_nodes = self.get_all_nodes()
         if not all_nodes:
+            print(f"❌ all_nodes が見つかりません")
             return []
+        
+        print(f"🔍 all_nodes contains {len(all_nodes)} nodes")
         
         # ファイルノードを取得
         file_node = all_nodes.get(target_node_id)
         if not file_node:
+            print(f"❌ target_node_id {target_node_id} がall_nodesに見つかりません")
+            print(f"🔍 available node_ids (first 10): {list(all_nodes.keys())[:10]}")
             return []
+        
+        print(f"🔍 file_node: {file_node}")
         
         # パスを構築（ルートから順番に）
         path = []
@@ -92,15 +99,19 @@ class ResultManager:
         while current_id:
             current_node = all_nodes.get(current_id)
             if not current_node:
+                print(f"❌ current_id {current_id} がall_nodesに見つかりません")
                 break
             
             # 現在のノードIDをパスに追加（先頭に挿入）
             path.insert(0, current_id)
+            print(f"🔍 added to path: {current_id}, current path: {path}")
             
             # 親ノードのIDを取得
             parent_id = current_node.get('parent_id')
+            print(f"🔍 parent_id: {parent_id}")
             current_id = parent_id
         
+        print(f"🔍 final path: {path}")
         return path
     
     
@@ -386,6 +397,21 @@ class ResultManager:
         try:
             print(f"🏷️ rename_node呼び出し: node_id={node_id}, new_name={new_name}, is_leaf={is_leaf}")
             
+            # デバッグ: 現在のドキュメント構造を確認
+            collection = self._mongo_module.get_collection(self._clustering_results)
+            current_doc = collection.find_one({"mongo_result_id": self._mongo_result_id})
+            if current_doc:
+                print(f"🔍 current_doc keys: {list(current_doc.keys())}")
+                if 'result' in current_doc:
+                    print(f"🔍 result keys: {list(current_doc['result'].keys()) if isinstance(current_doc['result'], dict) else 'not dict'}")
+                if 'all_nodes' in current_doc:
+                    all_nodes = current_doc['all_nodes']
+                    if node_id in all_nodes:
+                        print(f"🔍 target node in all_nodes: {all_nodes[node_id]}")
+                    else:
+                        print(f"❌ node_id {node_id} not found in all_nodes")
+                        print(f"🔍 all_nodes keys: {list(all_nodes.keys())[:10]}...")  # 最初の10個だけ表示
+            
             # 入力検証
             if not node_id or not node_id.strip():
                 print(f"❌ 無効なnode_id: {node_id}")
@@ -408,11 +434,29 @@ class ResultManager:
             # 更新用のパスと値を準備
             update_fields = {}
             
-            if not parents or len(parents) <= 1:
+            # パス生成の修正
+            if not parents or len(parents) == 0:
+                print(f"❌ parentsが見つかりません: {parents}")
+                return {"success": False, "error": f"Parents not found for node_id: {node_id}"}
+            elif len(parents) == 1:
                 # トップレベルフォルダの場合（ルート直下）
                 base_path = f"result.{node_id}"
             else:
-                base_path = f"result.{'.data.'.join(parents)}"
+                # サブフォルダの場合（parents[0]はルート、parents[-1]は対象ノード）
+                # result.parent1.data.parent2.data...target_node
+                parent_path_parts = []
+                for i, parent in enumerate(parents[:-1]):  # 最後のnode_id（自分自身）を除く
+                    if i == 0:
+                        parent_path_parts.append(parent)
+                    else:
+                        parent_path_parts.extend(["data", parent])
+                
+                if len(parent_path_parts) > 1:
+                    base_path = f"result.{'.'.join(parent_path_parts)}.data.{node_id}"
+                else:
+                    base_path = f"result.{parent_path_parts[0]}.data.{node_id}"
+            
+            print(f"🔍 生成されたbase_path: {base_path}")
             
             # nameの更新
             if new_name is not None:

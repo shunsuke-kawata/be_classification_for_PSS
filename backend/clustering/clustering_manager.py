@@ -134,6 +134,7 @@ class InitClusteringManager:
         sentence_id_dict:dict,
         image_id_dict:dict,
         cluster_num: int, 
+        overall_folder_name: str = None,
         output_folder: bool = False, 
         output_json: bool = False
     ):
@@ -328,13 +329,16 @@ class InitClusteringManager:
         # 全体をまとめたフォルダ要素でラップ
         overall_folder_id = Utils.generate_uuid()
         
+        # プロジェクト名を使用するか、フォールバックとしてoverall_folder_idを使用
+        display_name = overall_folder_name if overall_folder_name else overall_folder_id
+        
         # 全体フォルダでラップしてからparent_idを追加
         wrapped_result = {
             overall_folder_id: {
                 "data": upper_result_clustering_uuid_dict,
                 "parent_id": None,
                 "is_leaf": False,
-                "name": overall_folder_id
+                "name": display_name
             }
         }
         

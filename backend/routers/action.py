@@ -124,6 +124,16 @@ def execute_init_clustering(
     # バックグラウンド処理に渡す関数
     def run_clustering(cid_dict:dict,sid_dict:dict,iid_dict:dict,project_id:int, original_images_folder_path:str):
         try:
+            # プロジェクト名を取得
+            project_name_query = f"""
+                SELECT name FROM projects WHERE id = {project_id}
+            """
+            project_result, _ = execute_query(session=connect_session, query_text=project_name_query)
+            project_mapping = project_result.mappings().first() if project_result else None
+            project_name = project_mapping['name'] if project_mapping else f"Project_{project_id}"
+            
+            print(f"🏷️ プロジェクト名を取得: {project_name} (project_id: {project_id})")
+            
             cl_module = InitClusteringManager(
                 sentence_db=ChromaDBManager('sentence_embeddings'),
                 image_db=ChromaDBManager("image_embeddings"),
@@ -142,6 +152,7 @@ def execute_init_clustering(
                 sentence_id_dict=sid_dict,
                 image_id_dict=iid_dict,
                 cluster_num=cluster_num,
+                overall_folder_name=project_name,
                 output_folder=True,
                 output_json=True
             )
