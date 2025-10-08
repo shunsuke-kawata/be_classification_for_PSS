@@ -327,12 +327,117 @@ async def delete_folders(mongo_result_id: str, sources: List[str] = Query(...)):
     except Exception as e:
         print(f"❌ delete_folders処理中にエラーが発生: {str(e)}")
         return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": "Internal server error occurred during folder deletion",
+                    "data": {
+                        "mongo_result_id": mongo_result_id,
+                        "attempted_folder_ids": sources,
+                        "error": str(e)
+                    }
+                }
+            )
+
+
+@action_endpoint.put("/action/folders/{mongo_result_id}/{node_id}", tags=["action"], description="フォルダまたはファイルの名前を変更")
+async def rename_folder_or_file(
+    mongo_result_id: str,
+    node_id: str,
+    name: str = Query(None, description="新しい名前"),
+    is_leaf: bool = Query(None, description="リーフノード（ファイル）かどうか")
+):
+    """
+    指定されたノードの名前を変更する
+    
+    Args:
+        mongo_result_id (str): MongoDBの結果ID
+        node_id (str): 変更対象のノードID
+        name (str, optional): 新しい名前
+        is_leaf (bool, optional): リーフノード（ファイル）かどうか
+    
+    Returns:
+        JSONResponse: 名前変更処理の結果
+    """
+    try:
+        # 入力バリデーション
+        if not mongo_result_id or not mongo_result_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "mongo_result_id is required"}
+            )
+        
+        if not node_id or not node_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "node_id is required"}
+            )
+        
+        # nameとis_leafの両方がNoneの場合はエラー
+        if name is None and is_leaf is None:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "At least one of 'name' or 'is_leaf' parameters is required"}
+            )
+        
+        # nameが指定されている場合は空文字チェック
+        if name is not None and not name.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "name parameter must not be empty when provided"}
+            )
+        
+        print(f"🏷️ rename_folder_or_file呼び出し: mongo_result_id={mongo_result_id}, node_id={node_id}")
+        print(f"📝 パラメータ: name={name}, is_leaf={is_leaf}")
+        
+        # ResultManagerを初期化
+        result_manager = ResultManager(mongo_result_id)
+        
+        # 名前・is_leaf変更処理
+        update_result = result_manager.rename_node(
+            node_id=node_id, 
+            new_name=name.strip() if name is not None else None, 
+            is_leaf=is_leaf
+        )
+        
+        print(f"✅ 更新結果: {update_result}")
+        
+        if update_result.get("success", False):
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "message": "success",
+                    "data": {
+                        "node_id": node_id,
+                        "updated_fields": update_result.get("updated_fields", {}),
+                        "is_leaf": is_leaf
+                    }
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": "Failed to update node",
+                    "data": {
+                        "mongo_result_id": mongo_result_id,
+                        "node_id": node_id,
+                        "attempted_name": name,
+                        "attempted_is_leaf": is_leaf,
+                        "error": update_result.get("error", "Unknown error")
+                    }
+                }
+            )
+            
+    except Exception as e:
+        print(f"❌ rename_folder_or_file処理中にエラーが発生: {str(e)}")
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "message": "Internal server error occurred during folder deletion",
+                "message": "Internal server error occurred during rename operation",
                 "data": {
                     "mongo_result_id": mongo_result_id,
-                    "attempted_folder_ids": sources,
+                    "node_id": node_id,
+                    "attempted_name": name,
                     "error": str(e)
                 }
             }

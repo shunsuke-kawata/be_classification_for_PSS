@@ -370,3 +370,133 @@ class ResultManager:
         変更をコミットする（現在は何もしないが、将来的に必要に応じて実装）
         """
         pass
+
+    def rename_node(self, node_id: str, new_name: str = None, is_leaf: bool = None) -> dict:
+        """
+        指定されたノードの名前やis_leafを変更する
+        
+        Args:
+            node_id (str): 変更対象のノードID
+            new_name (str, optional): 新しい名前
+            is_leaf (bool, optional): リーフノードかどうか
+            
+        Returns:
+            dict: 操作結果
+        """
+        try:
+            print(f"🏷️ rename_node呼び出し: node_id={node_id}, new_name={new_name}, is_leaf={is_leaf}")
+            
+            # 入力検証
+            if not node_id or not node_id.strip():
+                print(f"❌ 無効なnode_id: {node_id}")
+                return {"success": False, "error": "Invalid node_id"}
+            
+            # nameとis_leafの両方がNoneの場合はエラー
+            if new_name is None and is_leaf is None:
+                print(f"❌ nameとis_leafの両方が未指定です")
+                return {"success": False, "error": "At least one of 'new_name' or 'is_leaf' must be provided"}
+            
+            # nameが指定されている場合は空文字チェック
+            if new_name is not None and not new_name.strip():
+                print(f"❌ 無効なnew_name: {new_name}")
+                return {"success": False, "error": "Invalid new_name"}
+            
+            # resultの変更
+            parents = self.get_parents(node_id)
+            print(f"📍 parents: {parents}")
+            
+            # 更新用のパスと値を準備
+            update_fields = {}
+            
+            if not parents or len(parents) <= 1:
+                # トップレベルフォルダの場合（ルート直下）
+                base_path = f"result.{node_id}"
+            else:
+                base_path = f"result.{'.data.'.join(parents)}"
+            
+            # nameの更新
+            if new_name is not None:
+                name_path = f"{base_path}.name"
+                update_fields[name_path] = new_name.strip()
+                print(f"📝 名前更新パス: {name_path} -> {new_name.strip()}")
+            
+            # is_leafの更新
+            if is_leaf is not None:
+                is_leaf_path = f"{base_path}.is_leaf"
+                update_fields[is_leaf_path] = is_leaf
+                print(f"🍃 is_leaf更新パス: {is_leaf_path} -> {is_leaf}")
+            
+            # MongoDBで更新実行
+            collection = self._mongo_module.get_collection(self._clustering_results)
+            result = collection.update_one(
+                {"mongo_result_id": self._mongo_result_id},
+                {"$set": update_fields}
+            )
+            
+            # all_nodesの更新
+            all_nodes_update_fields = {}
+            if new_name is not None:
+                all_nodes_name_path = f"all_nodes.{node_id}.name"
+                all_nodes_update_fields[all_nodes_name_path] = new_name.strip()
+                print(f"📝 all_nodes名前更新パス: {all_nodes_name_path} -> {new_name.strip()}")
+            
+            if is_leaf is not None:
+                all_nodes_is_leaf_path = f"all_nodes.{node_id}.is_leaf"
+                all_nodes_update_fields[all_nodes_is_leaf_path] = is_leaf
+                print(f"🍃 all_nodes is_leaf更新パス: {all_nodes_is_leaf_path} -> {is_leaf}")
+            
+            # all_nodesも更新
+            if all_nodes_update_fields:
+                all_nodes_result = collection.update_one(
+                    {"mongo_result_id": self._mongo_result_id},
+                    {"$set": all_nodes_update_fields}
+                )
+                print(f"📊 all_nodes更新結果: modified_count={all_nodes_result.modified_count}")
+            
+            print(f"📊 result更新結果: modified_count={result.modified_count}")
+            
+            if result.modified_count > 0:
+                return {
+                    "success": True,
+                    "message": "Node updated successfully",
+                    "updated_fields": {
+                        "name": new_name if new_name is not None else "not updated",
+                        "is_leaf": is_leaf if is_leaf is not None else "not updated"
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "No changes were made to the database"
+                }
+                
+        except Exception as e:
+            print(f"❌ rename_node処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _update_name_in_result_recursive(self, node: dict, target_id: str, new_name: str) -> bool:
+        """
+        result内の指定されたIDのノードの名前を再帰的に検索・更新する
+        
+        Args:
+            node (dict): 現在処理中のノード
+            target_id (str): 変更対象のノードID
+            new_name (str): 新しい名前
+            
+        Returns:
+            bool: 変更が行われたかどうか
+        """
+        # 現在のノードが対象の場合
+        if node.get('id') == target_id:
+            node['name'] = new_name
+            print(f"✅ result内でノード名を更新: {target_id} -> {new_name}")
+            return True
+        
+        # 子ノードを再帰的に検索
+        changed = False
+        if 'children' in node:
+            for child in node['children']:
+                if self._update_name_in_result_recursive(child, target_id, new_name):
+                    changed = True
+        
+        return changed
