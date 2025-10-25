@@ -135,7 +135,9 @@ def execute_init_clustering(
             print(f"🏷️ プロジェクト名を取得: {project_name} (project_id: {project_id})")
             
             cl_module = InitClusteringManager(
-                sentence_db=ChromaDBManager('sentence_embeddings'),
+                sentence_name_db=ChromaDBManager('sentence_name_embeddings'),
+                sentence_usage_db=ChromaDBManager('sentence_usage_embeddings'),
+                sentence_category_db=ChromaDBManager('sentence_category_embeddings'),
                 image_db=ChromaDBManager("image_embeddings"),
                 images_folder_path=f"./{DEFAULT_IMAGE_PATH}/{original_images_folder_path}",
                 output_base_path=f"./{DEFAULT_OUTPUT_PATH}/{project_id}",
@@ -143,10 +145,16 @@ def execute_init_clustering(
             
             target_sentence_ids = list(sid_dict.keys())
             target_image_ids = list(iid_dict.keys())
-            embeddings = cl_module.sentence_db.get_data_by_ids(target_sentence_ids)['embeddings']
+            
+            # sentence_name_dbからchroma_sentence_idを使用してembeddingsを取得
+            # chroma_sentence_idからname_idを生成
+            from clustering.chroma_db_manager import ChromaDBManager as ChromaDBManagerClass
+            name_ids = [ChromaDBManagerClass.generate_related_ids(chroma_sentence_id)["name_id"] for chroma_sentence_id in target_sentence_ids]
+            embeddings = cl_module.sentence_name_db.get_data_by_ids(name_ids)['embeddings']
             cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=embeddings)
+            
             result_dict,all_nodes = cl_module.clustering(
-                sentence_db_data=cl_module.sentence_db.get_data_by_ids(target_sentence_ids),
+                sentence_name_db_data=cl_module.sentence_name_db.get_data_by_ids(name_ids),
                 image_db_data=cl_module.image_db.get_data_by_ids(target_image_ids),
                 clustering_id_dict=cid_dict,
                 sentence_id_dict=sid_dict,
@@ -348,6 +356,88 @@ async def delete_folders(mongo_result_id: str, sources: List[str] = Query(...)):
                     }
                 }
             )
+
+
+@action_endpoint.get("/action/clustering/node/{mongo_result_id}/{node_id}", tags=["action"], description="指定されたノードの情報を取得する")
+async def get_node_info(mongo_result_id: str, node_id: str):
+    """
+    指定されたnode_idのノード情報をall_nodesから取得する
+    
+    Args:
+        mongo_result_id (str): MongoDBの結果ID（パスパラメータ）
+        node_id (str): ノードID（パスパラメータ）
+        
+    Returns:
+        JSONResponse: ノード情報
+    """
+    try:
+        # 入力バリデーション
+        if not mongo_result_id or not mongo_result_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "mongo_result_id is required"}
+            )
+        
+        if not node_id or not node_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "node_id is required"}
+            )
+        
+        print(f"🔍 get_node_info呼び出し: mongo_result_id={mongo_result_id}, node_id={node_id}")
+        
+        # ResultManagerを初期化してノード情報を取得
+        result_manager = ResultManager(mongo_result_id)
+        node_data = result_manager.get_node_info(node_id=node_id)
+        
+        # エラーの場合はHTTPExceptionを発生
+        if not node_data["success"]:
+            if "not found" in node_data.get("error", "").lower():
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={
+                        "message": node_data["error"],
+                        "data": {
+                            "mongo_result_id": mongo_result_id,
+                            "node_id": node_id
+                        }
+                    }
+                )
+            else:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "message": node_data["error"],
+                        "data": {
+                            "mongo_result_id": mongo_result_id,
+                            "node_id": node_id
+                        }
+                    }
+                )
+        
+        print(f"✅ ノード情報取得成功: {node_id}")
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "success",
+                "data": node_data["data"]  # all_nodesの値のみを返す
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ get_node_info処理中にエラー: {str(e)}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "message": "Internal server error occurred during node retrieval",
+                "data": {
+                    "mongo_result_id": mongo_result_id,
+                    "node_id": node_id,
+                    "error": str(e)
+                }
+            }
+        )
 
 
 @action_endpoint.put("/action/folders/{mongo_result_id}/{node_id}", tags=["action"], description="フォルダまたはファイルの名前を変更")

@@ -11,7 +11,29 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
+
 class ChromaDBManager:
+    
+    @staticmethod
+    def split_sentence_document(document: str) -> tuple[str, str, str]:
+        """
+        文書を3つの部分に分割する
+        
+        Args:
+            document (str): 分割する文書
+            
+        Returns:
+            tuple[str, str, str]: (名前部分, 用途部分, カテゴリ部分)
+        """
+        sentences = re.findall(r'.+?\.(?=\s+[A-Z]|$)', document)
+        
+        # 3つの文に分割できない場合はデフォルト値を返す
+        if len(sentences) < 3:
+            # 不足分は空文字で埋める
+            while len(sentences) < 3:
+                sentences.append("")
+        
+        return sentences[0].strip(), sentences[1].strip(), sentences[2].strip()
     
     class ChromaDocument:
         def __init__(self,document:str):
@@ -194,6 +216,72 @@ class ChromaDBManager:
             'embedding':results['embeddings'][0],
         }
     
+    @staticmethod
+    def create_separate_embeddings_from_document(
+        document: str, 
+        metadata: 'ChromaDBManager.ChromaMetaData'
+    ) -> tuple[tuple[str, list[float]], tuple[str, list[float]], tuple[str, list[float]]]:
+        """
+        文書から3つの独立したembeddingを作成する
+        
+        Args:
+            document (str): 元の文書
+            metadata (ChromaMetaData): メタデータ
+            
+        Returns:
+            tuple: ((name_sentence, name_embedding), (usage_sentence, usage_embedding), (category_sentence, category_embedding))
+        """
+        name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(document)
+        
+        # 各部分のembeddingを生成
+        name_embedding = SentenceEmbeddingsManager.sentence_to_embedding(name_part)
+        usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
+        category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
+        
+        return (
+            (name_part, name_embedding),
+            (usage_part, usage_embedding), 
+            (category_part, category_embedding)
+        )
+
+    @staticmethod
+    def extract_chroma_sentence_id(full_id: str) -> str:
+        """
+        完全なIDからchroma_sentence_idを抽出する
+        
+        Args:
+            full_id: 完全なID（例: "doc123_name", "doc123_usage", "doc123_category"）
+            
+        Returns:
+            str: chroma_sentence_id（例: "doc123"）
+        """
+        if '_name' in full_id:
+            return full_id.replace('_name', '')
+        elif '_usage' in full_id:
+            return full_id.replace('_usage', '')
+        elif '_category' in full_id:
+            return full_id.replace('_category', '')
+        else:
+            return full_id
+    
+    @staticmethod
+    def generate_related_ids(chroma_sentence_id: str) -> dict:
+        """
+        chroma_sentence_idから関連する3つのIDを生成
+        
+        Args:
+            chroma_sentence_id: chroma_sentence_idとなるID
+            
+        Returns:
+            dict: 3つのID
+        """
+        return {
+            "chroma_sentence_id": chroma_sentence_id,
+            "name_id": f"{chroma_sentence_id}_name",
+            "usage_id": f"{chroma_sentence_id}_usage",
+            "category_id": f"{chroma_sentence_id}_category"
+        }
+
     def get_data_by_metadata(
         self,
         key: str,
@@ -284,10 +372,13 @@ if __name__ == "__main__":
     #     for item in succeed_data
     # ]
 
-    # Sentence Embedding（テキストベース）
-    sentence_db_manager = ChromaDBManager("sentence_embeddings")
+    # Sentence Embedding（テキストベース）- 3つのデータベースに分離
+    sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
+    sentence_usage_db_manager = ChromaDBManager("sentence_usage_embeddings")
+    sentence_category_db_manager = ChromaDBManager("sentence_category_embeddings")
     
-    _ = sentence_db_manager.query_by_document("test")
+    # テスト用（name DBを使用）
+    _ = sentence_name_db_manager.get_all()
     
    
 

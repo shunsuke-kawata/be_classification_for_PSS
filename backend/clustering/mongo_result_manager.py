@@ -495,23 +495,26 @@ class ResultManager:
                     {"mongo_result_id": self._mongo_result_id},
                     {"$set": all_nodes_update_fields}
                 )
-                print(f"📊 all_nodes更新結果: modified_count={all_nodes_result.modified_count}")
+                print(f"📊 all_nodes更新結果: matched_count={all_nodes_result.matched_count}, modified_count={all_nodes_result.modified_count}")
             
-            print(f"📊 result更新結果: modified_count={result.modified_count}")
+            print(f"📊 result更新結果: matched_count={result.matched_count}, modified_count={result.modified_count}")
             
-            if result.modified_count > 0:
+            # 更新が成功したかチェック（matched_countがあることを確認）
+            # modified_count=0でも、matched_count>0であれば対象ノードは存在する
+            if result.matched_count > 0:
                 return {
                     "success": True,
-                    "message": "Node updated successfully",
+                    "message": "Node updated successfully" if result.modified_count > 0 else "Node already has the same value",
                     "updated_fields": {
                         "name": new_name if new_name is not None else "not updated",
                         "is_leaf": is_leaf if is_leaf is not None else "not updated"
-                    }
+                    },
+                    "modified": result.modified_count > 0
                 }
             else:
                 return {
                     "success": False,
-                    "error": "No changes were made to the database"
+                    "error": f"Node with id '{node_id}' not found in database"
                 }
                 
         except Exception as e:
@@ -544,3 +547,61 @@ class ResultManager:
                     changed = True
         
         return changed
+
+    def get_node_info(self, node_id: str) -> dict:
+        """
+        指定されたnode_idのノード情報をall_nodesから取得する（APIエンドポイント用）
+        
+        Args:
+            node_id (str): 取得するノードのID
+            
+        Returns:
+            dict: ノード情報（all_nodesの値のみ）
+            成功時: {"success": True, "node_id": str, "data": dict}
+            失敗時: {"success": False, "node_id": str, "error": str}
+        """
+        try:
+            print(f"🔍 get_node_info呼び出し: node_id={node_id}")
+            
+            # 入力検証
+            if not node_id or not node_id.strip():
+                return {
+                    "success": False,
+                    "node_id": node_id,
+                    "error": "Invalid node_id provided"
+                }
+            
+            # all_nodesから直接ノード情報を取得
+            all_nodes = self.get_all_nodes()
+            if not all_nodes:
+                return {
+                    "success": False,
+                    "node_id": node_id,
+                    "error": "No clustering results found"
+                }
+            
+            # 指定されたnode_idの情報を取得
+            node_info = all_nodes.get(node_id.strip())
+            
+            if not node_info:
+                return {
+                    "success": False,
+                    "node_id": node_id,
+                    "error": f"Node with id '{node_id}' not found"
+                }
+            
+            print(f"✅ ノード情報取得成功: {node_id}")
+            
+            return {
+                "success": True,
+                "node_id": node_id,
+                "data": node_info
+            }
+            
+        except Exception as e:
+            print(f"❌ get_node_info処理中にエラー: {e}")
+            return {
+                "success": False,
+                "node_id": node_id,
+                "error": str(e)
+            }

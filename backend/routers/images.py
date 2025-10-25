@@ -137,19 +137,58 @@ async def process_single_upload(
         # 仮のキャプション生成
         is_created, created_caption = Utils.get_exmaple_caption(png_path)
 
-        # ベクトルDBへ登録
-        sentence_db_manager = ChromaDBManager("sentence_embeddings")
+        # ベクトルDBへ登録（3つのデータベースに分けて保存）
+        sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
+        sentence_usage_db_manager = ChromaDBManager("sentence_usage_embeddings")
+        sentence_category_db_manager = ChromaDBManager("sentence_category_embeddings")
         image_db_manager = ChromaDBManager("image_embeddings")
         
-        # 生成されたキャプションから文章特徴量をデータベースに保存
-        chromadb_sentence_id = sentence_db_manager.add_one(
-            document=created_caption,
+        # chroma_sentence_idを生成
+        chroma_sentence_id = Utils.generate_uuid()
+        
+        # 生成されたキャプションを3つの部分に分割
+        name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(created_caption)
+        
+        # 各部分のembeddingを生成
+        name_embedding = SentenceEmbeddingsManager.sentence_to_embedding(name_part)
+        usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
+        category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
+        
+        # 関連IDを生成
+        related_ids = ChromaDBManager.generate_related_ids(chroma_sentence_id)
+        
+        # 各データベースに保存
+        chromadb_sentence_name_id = sentence_name_db_manager.add_one(
+            document=name_part,
             metadata=ChromaDBManager.ChromaMetaData(
                 path=png_path,
-                document=created_caption,
-                is_success=is_created
+                document=name_part,
+                is_success=is_created,
+                id=related_ids["name_id"]
             ),
-            embeddings=SentenceEmbeddingsManager.sentence_to_embedding(created_caption)
+            embeddings=name_embedding
+        )
+        
+        chromadb_sentence_usage_id = sentence_usage_db_manager.add_one(
+            document=usage_part,
+            metadata=ChromaDBManager.ChromaMetaData(
+                path=png_path,
+                document=usage_part,
+                is_success=is_created,
+                id=related_ids["usage_id"]
+            ),
+            embeddings=usage_embedding
+        )
+        
+        chromadb_sentence_category_id = sentence_category_db_manager.add_one(
+            document=category_part,
+            metadata=ChromaDBManager.ChromaMetaData(
+                path=png_path,
+                document=category_part,
+                is_success=is_created,
+                id=related_ids["category_id"]
+            ),
+            embeddings=category_embedding
         )
         
         # 保存された画像から画像特徴量をデータベースに保存
@@ -167,9 +206,10 @@ async def process_single_upload(
         escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
 
         clustering_id = Utils.generate_uuid()
+        # chroma_sentence_idをchromadb_sentence_idとして保存（後方互換性のため）
         insert_query = f"""
             INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id, chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{chromadb_sentence_id}', '{chromadb_image_id}', '{uploaded_user_id}');
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{chroma_sentence_id}', '{chromadb_image_id}', '{uploaded_user_id}');
         """
         result, _ = execute_query(connect_session, insert_query)
 
@@ -181,7 +221,10 @@ async def process_single_upload(
                 "アップロード成功", 
                 {
                     "clustering_id": clustering_id,
-                    "chromadb_sentence_id": chromadb_sentence_id,
+                    "chromadb_sentence_id": chroma_sentence_id,  # 変更: chroma_sentence_idを返す
+                    "chromadb_sentence_name_id": chromadb_sentence_name_id,
+                    "chromadb_sentence_usage_id": chromadb_sentence_usage_id,
+                    "chromadb_sentence_category_id": chromadb_sentence_category_id,
                     "chromadb_image_id": chromadb_image_id,
                     "processing_time": processing_time
                 }
