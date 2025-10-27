@@ -19,7 +19,6 @@ from clustering.caption_manager import CaptionManager
 from db_utils.commons import create_connect_session, execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewImage
-from utils.utils import generate_uuid, image2png
 from pathlib import Path
 from config import DEFAULT_IMAGE_PATH ,OPENAI_API_KEY
 from clustering.caption_manager import CaptionManager
@@ -144,7 +143,8 @@ async def process_single_upload(
         image_db_manager = ChromaDBManager("image_embeddings")
         
         # chroma_sentence_idを生成
-        chroma_sentence_id = Utils.generate_uuid()
+        sentence_id = Utils.generate_uuid()
+        image_id = Utils.generate_uuid()
         
         # 生成されたキャプションを3つの部分に分割
         name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(created_caption)
@@ -154,62 +154,65 @@ async def process_single_upload(
         usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
         category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
         
-        # 関連IDを生成
-        related_ids = ChromaDBManager.generate_related_ids(chroma_sentence_id)
-        
-        # 各データベースに保存
-        chromadb_sentence_name_id = sentence_name_db_manager.add_one(
-            document=name_part,
-            metadata=ChromaDBManager.ChromaMetaData(
+        # 各データベースに同じsentence_idで保存
+        sentence_name_db_manager.collection.add(
+            ids=[sentence_id],
+            documents=[name_part],
+            metadatas=[ChromaDBManager.ChromaMetaData(
                 path=png_path,
                 document=name_part,
                 is_success=is_created,
-                id=related_ids["name_id"]
-            ),
-            embeddings=name_embedding
+                sentence_id=sentence_id
+            ).to_dict()],
+            embeddings=[name_embedding]
         )
         
-        chromadb_sentence_usage_id = sentence_usage_db_manager.add_one(
-            document=usage_part,
-            metadata=ChromaDBManager.ChromaMetaData(
+        sentence_usage_db_manager.collection.add(
+            ids=[sentence_id],
+            documents=[usage_part],
+            metadatas=[ChromaDBManager.ChromaMetaData(
                 path=png_path,
                 document=usage_part,
                 is_success=is_created,
-                id=related_ids["usage_id"]
-            ),
-            embeddings=usage_embedding
+                sentence_id=sentence_id
+            ).to_dict()],
+            embeddings=[usage_embedding]
         )
         
-        chromadb_sentence_category_id = sentence_category_db_manager.add_one(
-            document=category_part,
-            metadata=ChromaDBManager.ChromaMetaData(
+        sentence_category_db_manager.collection.add(
+            ids=[sentence_id],
+            documents=[category_part],
+            metadatas=[ChromaDBManager.ChromaMetaData(
                 path=png_path,
                 document=category_part,
                 is_success=is_created,
-                id=related_ids["category_id"]
-            ),
-            embeddings=category_embedding
+                sentence_id=sentence_id
+            ).to_dict()],
+            embeddings=[category_embedding]
         )
         
-        # 保存された画像から画像特徴量をデータベースに保存
-        chromadb_image_id = image_db_manager.add_one(
-            document=created_caption,
-            metadata=ChromaDBManager.ChromaMetaData(
+        # 画像データベースに保存
+        image_embedding = ImageEmbeddingsManager.image_to_embedding(save_path)
+        image_db_manager.collection.add(
+            ids=[image_id],
+            documents=[created_caption],
+            metadatas=[ChromaDBManager.ChromaMetaData(
                 path=png_path,
                 document=created_caption,
-                is_success=is_created
-            ),
-            embeddings=ImageEmbeddingsManager.image_to_embedding(save_path)
+                is_success=is_created,
+                sentence_id=image_id
+            ).to_dict()],
+            embeddings=[image_embedding]
         )
         
         is_created_for_sql = 'TRUE' if is_created else 'FALSE'
         escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
 
         clustering_id = Utils.generate_uuid()
-        # chroma_sentence_idをchromadb_sentence_idとして保存（後方互換性のため）
+        # 新しいスキーマに対応：統一sentence_idを保存
         insert_query = f"""
             INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id, chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{chroma_sentence_id}', '{chromadb_image_id}', '{uploaded_user_id}');
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{sentence_id}', '{sentence_id}', '{uploaded_user_id}');
         """
         result, _ = execute_query(connect_session, insert_query)
 
@@ -221,11 +224,8 @@ async def process_single_upload(
                 "アップロード成功", 
                 {
                     "clustering_id": clustering_id,
-                    "chromadb_sentence_id": chroma_sentence_id,  # 変更: chroma_sentence_idを返す
-                    "chromadb_sentence_name_id": chromadb_sentence_name_id,
-                    "chromadb_sentence_usage_id": chromadb_sentence_usage_id,
-                    "chromadb_sentence_category_id": chromadb_sentence_category_id,
-                    "chromadb_image_id": chromadb_image_id,
+                    "chromadb_sentence_id": sentence_id,  # 統一ID
+                    "chromadb_image_id": sentence_id,
                     "processing_time": processing_time
                 }
             )

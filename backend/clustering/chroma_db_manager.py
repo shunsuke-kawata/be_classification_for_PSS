@@ -46,7 +46,7 @@ class ChromaDBManager:
         def get_split_document(self)->list[str]:
             return re.findall(r'.+?\.(?=\s+[A-Z]|$)', self._document)
     class ChromaMetaData:
-        def __init__(self, path: str,document:str,is_success: bool,id:str | None=None):
+        def __init__(self, path: str, document: str, is_success: bool, sentence_id: str, id: str | None = None):
             #新規作成の場合UUIDを設定,そうでない時、引数から継承
             if id is None:
                 self._id = Utils.generate_uuid()
@@ -56,6 +56,7 @@ class ChromaDBManager:
             self._path = path
             self._is_success = is_success
             self._document = document
+            self._sentence_id = sentence_id
 
         @property
         def id(self) -> str:
@@ -72,13 +73,18 @@ class ChromaDBManager:
         @property
         def is_success(self) -> bool:
             return self._is_success
+        
+        @property
+        def sentence_id(self) -> str:
+            return self._sentence_id
 
         def to_dict(self) -> dict:
             return {
                 "id": self.id,
                 "path": self.path,
                 "is_success": self.is_success,
-                "document":self.document
+                "document": self.document,
+                "sentence_id": self.sentence_id
             }
     
         
@@ -191,7 +197,7 @@ class ChromaDBManager:
         )
         return {
             'ids': results['ids'],
-            'metadatas': [self.ChromaMetaData(id=metadata['id'],path=metadata['path'],document=metadata['document'],is_success=metadata['is_success']) for metadata in results['metadatas']],
+            'metadatas': [self.ChromaMetaData(id=metadata['id'], path=metadata['path'], document=metadata['document'], is_success=metadata['is_success'], sentence_id=metadata['sentence_id']) for metadata in results['metadatas']],
             'documents':[self.ChromaDocument(document=document) for document in results['documents']],
             'embeddings': results['embeddings'],
         }
@@ -265,21 +271,21 @@ class ChromaDBManager:
             return full_id
     
     @staticmethod
-    def generate_related_ids(chroma_sentence_id: str) -> dict:
+    def generate_related_ids(sentence_id: str) -> dict:
         """
-        chroma_sentence_idから関連する3つのIDを生成
+        sentence_idから関連するIDを生成（統一ID方式）
         
         Args:
-            chroma_sentence_id: chroma_sentence_idとなるID
+            sentence_id: 統一されたsentence_id
             
         Returns:
-            dict: 3つのID
+            dict: 同じIDを返す
         """
         return {
-            "chroma_sentence_id": chroma_sentence_id,
-            "name_id": f"{chroma_sentence_id}_name",
-            "usage_id": f"{chroma_sentence_id}_usage",
-            "category_id": f"{chroma_sentence_id}_category"
+            "sentence_id": sentence_id,
+            "name_id": sentence_id,
+            "usage_id": sentence_id,
+            "category_id": sentence_id
         }
 
     def get_data_by_metadata(
@@ -303,10 +309,35 @@ class ChromaDBManager:
                 id=results['metadatas'][0]['id'],
                 path=results['metadatas'][0]['path'],
                 document=results['metadatas'][0]['document'],
-                is_success=results['metadatas'][0]['is_success']
+                is_success=results['metadatas'][0]['is_success'],
+                sentence_id=results['metadatas'][0]['sentence_id']
             ),
             'document': self.ChromaDocument(document=results['documents'][0]),
             'embedding': results['embeddings'][0],
+        }
+    
+    def get_data_by_sentence_ids(self, sentence_ids: list[str]):
+        """
+        複数のsentence_idでデータを検索する
+        """
+        all_results = {'ids': [], 'metadatas': [], 'documents': [], 'embeddings': []}
+        
+        for sentence_id in sentence_ids:
+            results = self.collection.get(
+                where={"sentence_id": sentence_id},
+                include=["documents", "metadatas", "embeddings"]
+            )
+            if results['ids']:
+                all_results['ids'].extend(results['ids'])
+                all_results['metadatas'].extend(results['metadatas'])
+                all_results['documents'].extend(results['documents'])
+                all_results['embeddings'].extend(results['embeddings'])
+        
+        return {
+            'ids': all_results['ids'],
+            'metadatas': [self.ChromaMetaData(id=metadata['id'], path=metadata['path'], document=metadata['document'], is_success=metadata['is_success'], sentence_id=metadata['sentence_id']) for metadata in all_results['metadatas']],
+            'documents': [self.ChromaDocument(document=document) for document in all_results['documents']],
+            'embeddings': all_results['embeddings'],
         }
     
     def query_by_embeddings(
@@ -357,20 +388,6 @@ class ChromaDBManager:
 
 if __name__ == "__main__":
 
-    # with open('captions_20250522_013210.json', 'r', encoding='utf-8') as f:
-    #     data = json.load(f)
-
-    # succeed_data = [item for item in data if item['is_success']]
-
-    # # ChromaMetaDataインスタンスを作成
-    # metadatas = [
-    #     ChromaDBManager.ChromaMetaData(
-    #         path=item["path"],
-    #         document=item["caption"],
-    #         is_success=item["is_success"]
-    #     )
-    #     for item in succeed_data
-    # ]
 
     # Sentence Embedding（テキストベース）- 3つのデータベースに分離
     sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
@@ -379,20 +396,4 @@ if __name__ == "__main__":
     
     # テスト用（name DBを使用）
     _ = sentence_name_db_manager.get_all()
-    
-   
-
-    # sentence_db_manager.add(
-    #     documents=[meta.document for meta in metadatas],  # または meta.caption にしたければ ChromaMetaData にフィールド追加が必要
-    #     metadatas=metadatas,
-    #     embeddings=[SentenceEmbeddingsManager.sentence_to_embedding(item["caption"]) for item in succeed_data]
-    # )
-     
-    # # Image Embedding（画像ベース）
-    # image_db_manager = ChromaDBManager("image_embeddings")
-    # image_db_manager.add(
-    #     documents=[meta.path for meta in metadatas],
-    #     embeddings=[ImageEmbeddingsManager.image_to_embedding(f"./imgs/{item['path']}") for item in succeed_data],
-    #     metadatas=metadatas
-    # )
     

@@ -94,7 +94,7 @@ def execute_init_clustering(
 
     # 対象画像の取得
     query_text = f"""
-        SELECT clustering_id,chromadb_sentence_id,chromadb_image_id
+        SELECT clustering_id, chromadb_sentence_id, chromadb_image_id
         FROM images
         WHERE project_id = {project_id} AND is_created_caption = TRUE;
     """
@@ -119,10 +119,10 @@ def execute_init_clustering(
         
         by_clustering_id[cid] = {"sentence_id": sid, "image_id": iid}
         by_chromadb_sentence_id[sid] = {"clustering_id": cid, "image_id": iid}
-        by_chromadb_image_id[iid] = {"clustering_id": cid, "sentence_id": sid}
+        by_chromadb_image_id[iid] = {"clustering_id": cid}
     
     # バックグラウンド処理に渡す関数
-    def run_clustering(cid_dict:dict,sid_dict:dict,iid_dict:dict,project_id:int, original_images_folder_path:str):
+    def run_clustering(cid_dict: dict, sid_dict: dict, iid_dict: dict, project_id: int, original_images_folder_path: str):
         try:
             # プロジェクト名を取得
             project_name_query = f"""
@@ -146,18 +146,16 @@ def execute_init_clustering(
             target_sentence_ids = list(sid_dict.keys())
             target_image_ids = list(iid_dict.keys())
             
-            # sentence_name_dbからchroma_sentence_idを使用してembeddingsを取得
-            # chroma_sentence_idからname_idを生成
-            from clustering.chroma_db_manager import ChromaDBManager as ChromaDBManagerClass
-            name_ids = [ChromaDBManagerClass.generate_related_ids(chroma_sentence_id)["name_id"] for chroma_sentence_id in target_sentence_ids]
-            embeddings = cl_module.sentence_name_db.get_data_by_ids(name_ids)['embeddings']
+            # sentence_name_dbから直接sentence_idを使用してembeddingsを取得
+            sentence_data = cl_module.sentence_name_db.get_data_by_sentence_ids(target_sentence_ids)
+            embeddings = sentence_data['embeddings']
             cluster_num, _ = cl_module.get_optimal_cluster_num(embeddings=embeddings)
             
             result_dict,all_nodes = cl_module.clustering(
-                sentence_name_db_data=cl_module.sentence_name_db.get_data_by_ids(name_ids),
+                sentence_name_db_data=sentence_data,
                 image_db_data=cl_module.image_db.get_data_by_ids(target_image_ids),
                 clustering_id_dict=cid_dict,
-                sentence_id_dict=sid_dict,
+                sentence_id_dict=sid_dict,  # 元の形式に戻す
                 image_id_dict=iid_dict,
                 cluster_num=cluster_num,
                 overall_folder_name=project_name,
@@ -192,8 +190,7 @@ def execute_init_clustering(
             _, _ = execute_query(session=connect_session, query_text=update_query)
                 
     # 非同期実行
-    print(original_images_folder_path)
-    background_tasks.add_task(run_clustering, by_clustering_id, by_chromadb_sentence_id,by_chromadb_image_id,project_id, original_images_folder_path)
+    background_tasks.add_task(run_clustering, by_clustering_id, by_chromadb_sentence_id, by_chromadb_image_id, project_id, original_images_folder_path)
     
     # 初期化状態を更新
     update_query = f"""

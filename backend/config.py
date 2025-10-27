@@ -46,3 +46,24 @@ class CLUSTERING_STATUS(IntEnum):
     EXECUTING = 1
     FINISHED = 2
     FAILED = 3
+
+MAJOR_COLORS = colors = [
+    "red", "blue", "yellow", "green", "orange", "purple", "pink", "brown",
+    "black", "white", "gray", "grey", "cyan", "magenta", "beige", "ivory",
+    "turquoise", "teal", "lime", "olive", "navy", "maroon", "coral",
+    "salmon", "khaki", "violet", "indigo", "gold", "silver", "bronze",
+    "crimson", "plum", "orchid", "lavender", "mint", "aqua", "azure",
+    "chocolate", "tan", "peach", "apricot", "amber", "burgundy",
+    "mustard", "emerald", "jade", "rose", "ruby", "sapphire",
+    "skyblue", "aquamarine", "chartreuse", "fuchsia", "periwinkle",
+    "slate", "charcoal", "sand", "seashell", "honey", "cream",
+    "snow", "wheat", "moccasin", "tomato", "firebrick", "orchid",
+    "lavenderblush", "midnightblue", "royalblue", "steelblue",
+    "dodgerblue", "deepskyblue", "lightblue", "powderblue",
+    "forestgreen", "seagreen", "lightgreen", "darkgreen", "springgreen",
+    "palegreen", "chartreuse", "greenyellow", "lawngreen",
+    "darkolivegreen", "darkslategray", "slategray", "lightgray",
+    "antiquewhite", "bisque", "blanchedalmond", "burlywood",
+    "cornsilk", "linen", "oldlace", "papayawhip", "peachpuff",
+    "tan", "sienna", "peru", "rosybrown"
+]

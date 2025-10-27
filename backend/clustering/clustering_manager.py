@@ -10,10 +10,59 @@ from sklearn.metrics import silhouette_score
 from .chroma_db_manager import ChromaDBManager
 import re
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction import text
 from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
-from config import DEFAULT_IMAGE_PATH
+from config import DEFAULT_IMAGE_PATH,MAJOR_COLORS
+
+class ClusteringUtils:
+    @classmethod
+    def get_tfidf_from_documents_array(cls, documents: list[str], max_words: int = 10, order: str = 'high',extra_stop_words:list[str]=None) -> list[tuple[str, float]]:
+        """
+        文書配列からTF-IDFを使用してスコアの高い/低い語を取得する
+        
+        Args:
+            documents: 文書の配列
+            max_words: 取得する最大語数（デフォルト: 10）
+            order: ソート順 'high'（高い順）または 'low'（低い順）（デフォルト: 'high'）
+            stop_words: ストップワード設定（デフォルト: 'english'）
+        
+        Returns:
+            list[tuple[str, float]]: (語, スコア)のタプルの配列
+        """
+        if not documents or len(documents) == 0:
+            return []
+        
+        my_stop_words = list(text.ENGLISH_STOP_WORDS.union(extra_stop_words or []))
+        vectorizer = TfidfVectorizer(stop_words=my_stop_words)
+        tfidf_matrix = vectorizer.fit_transform(documents)
+        
+        # 各語彙のスコア（文書全体での合計スコア）
+        sum_scores = np.asarray(tfidf_matrix.sum(axis=0))[0]
+        terms = vectorizer.get_feature_names_out()
+        
+        # スコア順に並べる
+        if order.lower() == 'high':
+            # 高い順（降順）
+            sorted_idx = sum_scores.argsort()[::-1]
+        elif order.lower() == 'low':
+            # 低い順（昇順）
+            sorted_idx = sum_scores.argsort()
+        else:
+            raise ValueError("order parameter must be 'high' or 'low'")
+        
+        # 指定された最大語数まで結果を取得
+        result = []
+        for i, idx in enumerate(sorted_idx[:max_words]):
+            word = terms[idx]
+            score = sum_scores[idx]
+            result.append((word, float(score)))
+        
+        return result
+        
+        
 class InitClusteringManager:
     
     COHESION_THRESHOLD = 0.75
@@ -86,26 +135,26 @@ class InitClusteringManager:
         category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
         
         # IDに接尾辞を付けて区別
-        related_ids = ChromaDBManager.generate_related_ids(chroma_sentence_id)
+        # related_ids = ChromaDBManager.generate_related_ids(chroma_sentence_id)
         
         # 各データベース用のメタデータを作成
         name_metadata = ChromaDBManager.ChromaMetaData(
             path=metadata.path,
             document=name_part,
             is_success=metadata.is_success,
-            id=related_ids["name_id"]
+            id=chroma_sentence_id
         )
         usage_metadata = ChromaDBManager.ChromaMetaData(
             path=metadata.path,
             document=usage_part,
             is_success=metadata.is_success,
-            id=related_ids["usage_id"]
+            id=chroma_sentence_id
         )
         category_metadata = ChromaDBManager.ChromaMetaData(
             path=metadata.path,
             document=category_part,
             is_success=metadata.is_success,
-            id=related_ids["category_id"]
+            id=chroma_sentence_id
         )
         
         # 各データベースに登録
@@ -113,31 +162,8 @@ class InitClusteringManager:
         self._sentence_usage_db.add_one(usage_part, usage_metadata, usage_embedding)
         self._sentence_category_db.add_one(category_part, category_metadata, category_embedding)
         
-        return related_ids
+        return chroma_sentence_id
     
-    def get_related_data_by_chroma_sentence_id(self, chroma_sentence_id: str) -> dict:
-        """
-        chroma_sentence_idから関連するすべてのデータを取得する
-        
-        Args:
-            chroma_sentence_id: chroma_sentence_idとなるID
-            
-        Returns:
-            dict: 関連するすべてのデータ
-        """
-        related_ids = ChromaDBManager.generate_related_ids(chroma_sentence_id)
-        
-        # 各データベースからデータを取得
-        name_data = self.sentence_name_db.get_data_by_ids([related_ids["name_id"]])
-        usage_data = self.sentence_usage_db.get_data_by_ids([related_ids["usage_id"]])
-        category_data = self.sentence_category_db.get_data_by_ids([related_ids["category_id"]])
-        
-        return {
-            "chroma_sentence_id": chroma_sentence_id,
-            "name_data": name_data,
-            "usage_data": usage_data,
-            "category_data": category_data
-        }
     
     def get_optimal_cluster_num(self, embeddings: list[float], min_cluster_num: int = 5, max_cluster_num: int = 30) -> tuple[int, float]:
         embeddings_np = np.array(embeddings)
@@ -212,7 +238,7 @@ class InitClusteringManager:
         sentence_name_db_data: dict[str, list],  # 変更: 明確な命名
         image_db_data: dict[str, list],
         clustering_id_dict: dict,
-        sentence_id_dict: dict,
+        sentence_id_dict: dict,  # sentence_id_dictを使用
         image_id_dict: dict,
         cluster_num: int, 
         overall_folder_name: str = None,
@@ -224,12 +250,11 @@ class InitClusteringManager:
         result_clustering_uuid_dict = dict()
         sentence_embeddings_np = np.array(sentence_name_db_data['embeddings'])
         
-        sentence_documents_data = np.array(sentence_name_db_data['documents'])
-        print(sentence_documents_data)
+        sentence_documents_data = sentence_name_db_data['documents']
+        print(f"Documents count: {len(sentence_documents_data)}")
         sentence_document_data_embeddings = []
         for document in sentence_documents_data:
-            # 文章の1文目（名前部分）を使用してembeddingを生成
-            sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(''.join(document.get_split_document()[0]))
+            sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(document.document)
             sentence_document_data_embeddings.append(sentence_document_embedding)
         
         print(f"1段階目 文章特徴量でクラスタリング（名前ベース）")
@@ -240,10 +265,10 @@ class InitClusteringManager:
             result_clustering_uuid_dict[folder_id]['data'] = {}
             
             for idx,_sentence_id in enumerate(sentence_name_db_data['ids']):
-                # _sentence_idから chroma_sentence_id を抽出
-                chroma_sentence_id = ChromaDBManager.extract_chroma_sentence_id(_sentence_id)
-                _clustering_id = sentence_id_dict[chroma_sentence_id]['clustering_id']
+
+                _clustering_id = sentence_id_dict[_sentence_id]['clustering_id']
                 result_clustering_uuid_dict[folder_id]['data'][_clustering_id]= sentence_name_db_data['metadatas'][idx].path
+
             result_clustering_uuid_dict[folder_id]['is_leaf']=True
             result_clustering_uuid_dict[folder_id]['name']=folder_id
         else:  
@@ -255,21 +280,28 @@ class InitClusteringManager:
             tmp_result_dict = dict()
             for idx in range(cluster_num):
                 folder_id = Utils.generate_uuid()
-                tmp_result_dict[idx] = {'folder_id': folder_id, 'data': {}}
+                tmp_result_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
             
             for i,label in enumerate(labels):
-                # _sentence_idから chroma_sentence_id を抽出
-                chroma_sentence_id = ChromaDBManager.extract_chroma_sentence_id(sentence_name_db_data['ids'][i])
-                _clustering_id = sentence_id_dict[chroma_sentence_id]['clustering_id']
+                _sentence_id = sentence_name_db_data['ids'][i]
+
+                _clustering_id = sentence_id_dict[_sentence_id]['clustering_id']
                 tmp_result_dict[label]['data'][_clustering_id] = sentence_name_db_data['metadatas'][i].path
-                
+                tmp_result_dict[label]['captions'][_clustering_id] = sentence_name_db_data['documents'][i].document
+
+            with open('test_new.json', 'w') as f:
+                json.dump(tmp_result_dict, f, indent=2)
             #結果用にjson成形
-            for value in tmp_result_dict.values():
-            
-                result_clustering_uuid_dict[value['folder_id']]=dict()
-                result_clustering_uuid_dict[value['folder_id']]['data'] = value['data']
-                result_clustering_uuid_dict[value['folder_id']]['is_leaf']=True
-                result_clustering_uuid_dict[value['folder_id']]['name']=value['folder_id']
+            for tmp_value_1 in tmp_result_dict.values():
+                
+                
+                
+                important_word = ClusteringUtils.get_tfidf_from_documents_array(documents=list(tmp_value_1['captions'].values()),max_words=1,extra_stop_words=['object','main']+MAJOR_COLORS)
+                print(important_word)
+                result_clustering_uuid_dict[tmp_value_1['folder_id']]=dict()
+                result_clustering_uuid_dict[tmp_value_1['folder_id']]['data'] = tmp_value_1['data']
+                result_clustering_uuid_dict[tmp_value_1['folder_id']]['is_leaf']=True
+                result_clustering_uuid_dict[tmp_value_1['folder_id']]['name']=important_word[0][0]
         
         print(f"2段階目 凝集度が低いものを画像特徴量でクラスタリング")
         #コサイン類似度で凝集度を判定する関数
@@ -291,24 +323,26 @@ class InitClusteringManager:
             _clustering_id_keys = list(value['data'].keys())
             
             #クラスタ内の画像の文章データベースのIDを抽出
-            target_chroma_sentence_ids = [clustering_id_dict[_clustering_id]['sentence_id'] for _clustering_id in _clustering_id_keys]
-            # chroma_sentence_idからname_idを生成
-            target_name_ids = [ChromaDBManager.generate_related_ids(chroma_sentence_id)["name_id"] for chroma_sentence_id in target_chroma_sentence_ids]
+            target_sentence_ids = []
+            for _clustering_id in _clustering_id_keys:
+
+                target_sentence_ids.append(clustering_id_dict[_clustering_id]['sentence_id'])
 
             # sentence_name_dbを使用して凝集度を計算
-            sentence_data_in_cluster = self._sentence_name_db.get_data_by_ids(ids=target_name_ids)
+            sentence_data_in_cluster = self._sentence_name_db.get_data_by_sentence_ids(target_sentence_ids)
             
             cohesion_cosine_similarity = _cohesion_cosine_similarity(vectors=sentence_data_in_cluster['embeddings'])
             #凝集度がすでに一定以上の場合以降の処理をスキップする
             if(cohesion_cosine_similarity>self.COHESION_THRESHOLD):
                 continue
             
-            target_image_ids = [clustering_id_dict[_clustering_id]['image_id'] for _clustering_id in _clustering_id_keys]
+            target_image_ids = []
+            for _clustering_id in _clustering_id_keys:
+                target_image_ids.append(clustering_id_dict[_clustering_id]['image_id'])
 
             image_data_in_cluster = self._image_db.get_data_by_ids(target_image_ids)
             
             inner_cluster_num, _ = self.get_optimal_cluster_num(embeddings=image_data_in_cluster['embeddings'],max_cluster_num=12)
-            print(f"  {cluster_folder_id} 画像特徴量クラスタ数：{inner_cluster_num}")
             #結果としてクラスタ数が1以下の場合もスキップする
             if inner_cluster_num <=1:
                 continue
@@ -321,11 +355,14 @@ class InitClusteringManager:
             tmp_result_inner_dict = dict()
             for idx in range(inner_cluster_num):
                 folder_id = Utils.generate_uuid()
-                tmp_result_inner_dict[idx] = {'folder_id': folder_id, 'data': {}}
+                tmp_result_inner_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
 
             for i,label in enumerate(labels):
-                _clustering_id = image_id_dict[image_data_in_cluster['ids'][i]]['clustering_id']
+                _image_id = image_data_in_cluster['ids'][i]
+                
+                _clustering_id = image_id_dict[_image_id]['clustering_id']
                 tmp_result_inner_dict[label]['data'][_clustering_id] = image_data_in_cluster['metadatas'][i].path
+
             
             #結果用にjson成形
             for inner_value in tmp_result_inner_dict.values():
@@ -346,19 +383,18 @@ class InitClusteringManager:
         for idx,(_folder_id,result_value) in enumerate(result_id_dict_1.items()):
             ids = list(result_value['data'].keys())
 
-            # chroma_sentence_idからcategory_idを生成
-            target_chroma_sentence_ids = [clustering_id_dict[id]['sentence_id'] for id in ids]
-            target_category_ids = [ChromaDBManager.generate_related_ids(chroma_sentence_id)["category_id"] for chroma_sentence_id in target_chroma_sentence_ids]
-            
+            # sentence_idを直接取得
+            target_sentence_ids = []
+            for id in ids:
+                target_sentence_ids.append(clustering_id_dict[id]['sentence_id'])
+
             # sentence_category_dbを使用して上位階層のクラスタリングを行う
-            upper_sentence_data = self._sentence_category_db.get_data_by_ids(ids=target_category_ids)
+            upper_sentence_data = self._sentence_category_db.get_data_by_sentence_ids(target_sentence_ids)
             
             documents_data = upper_sentence_data['documents']
             upper_sentence_document_embeddings = []
             for document in documents_data:
-                # カテゴリデータベースには既に3文目のみが格納されているため、そのまま使用
                 upper_sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(document.document)
-                print(document.document)
                 upper_sentence_document_embeddings.append(upper_sentence_document_embedding)
             
             upper_embeddings_np = np.array(upper_sentence_document_embeddings)
@@ -377,7 +413,7 @@ class InitClusteringManager:
         upper_result_dict = dict()
         for idx in range(upper_cluster_num):
             folder_id = Utils.generate_uuid()
-            upper_result_dict[idx] = {'folder_id': folder_id, 'data': []}
+            upper_result_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
         for idx,label in enumerate(labels):
             upper_result_dict[label]['data'].append(upper_sentence_dict[idx]['folder_id'])
         

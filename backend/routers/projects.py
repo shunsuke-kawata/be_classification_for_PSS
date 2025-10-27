@@ -9,8 +9,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session, execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProject
-from utils.utils import generate_uuid
-
 from pathlib import Path
 from config import DEFAULT_IMAGE_PATH
 
