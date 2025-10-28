@@ -67,3 +67,13 @@ MAJOR_COLORS = colors = [
     "cornsilk", "linen", "oldlace", "papayawhip", "peachpuff",
     "tan", "sienna", "peru", "rosybrown"
 ]
+
+MAJOR_SHAPES = [
+    "circle", "square", "triangle", "rectangle", "oval", "ellipse", "diamond", "star", "heart",
+    "sphere", "cube", "cone", "cylinder", "pyramid", "prism", "torus",
+    "polygon", "hexagon", "pentagon", "octagon", "line", "curve", "arc", "angle", "edge", "surface",
+    "round", "flat", "straight", "curved", "bent", "twisted", "spiral", "wavy", "irregular",
+    "smooth", "rough", "sharp", "pointed", "blunt",
+    "shape", "form", "figure", "outline", "contour", "pattern", "structure", "silhouette",
+    "geometry", "dimension", "frame", "profile"
+]

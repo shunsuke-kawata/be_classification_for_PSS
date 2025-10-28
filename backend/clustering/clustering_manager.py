@@ -15,19 +15,20 @@ from sklearn.feature_extraction import text
 from .embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from .embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from .utils import Utils
-from config import DEFAULT_IMAGE_PATH,MAJOR_COLORS
+from config import DEFAULT_IMAGE_PATH,MAJOR_COLORS, MAJOR_SHAPES
 
 class ClusteringUtils:
     @classmethod
     def get_tfidf_from_documents_array(cls, documents: list[str], max_words: int = 10, order: str = 'high',extra_stop_words:list[str]=None) -> list[tuple[str, float]]:
         """
         文書配列からTF-IDFを使用してスコアの高い/低い語を取得する
+        空の語彙エラーが発生した場合、段階的にストップワードを減らして再試行する
         
         Args:
             documents: 文書の配列
             max_words: 取得する最大語数（デフォルト: 10）
             order: ソート順 'high'（高い順）または 'low'（低い順）（デフォルト: 'high'）
-            stop_words: ストップワード設定（デフォルト: 'english'）
+            extra_stop_words: 追加ストップワード設定
         
         Returns:
             list[tuple[str, float]]: (語, スコア)のタプルの配列
@@ -35,32 +36,65 @@ class ClusteringUtils:
         if not documents or len(documents) == 0:
             return []
         
-        my_stop_words = list(text.ENGLISH_STOP_WORDS.union(extra_stop_words or []))
-        vectorizer = TfidfVectorizer(stop_words=my_stop_words)
-        tfidf_matrix = vectorizer.fit_transform(documents)
+        # ベースのストップワードを設定
+        base_stop_words = list(text.ENGLISH_STOP_WORDS)
+        extra_stop_words = extra_stop_words or []
         
-        # 各語彙のスコア（文書全体での合計スコア）
-        sum_scores = np.asarray(tfidf_matrix.sum(axis=0))[0]
-        terms = vectorizer.get_feature_names_out()
+        # 段階的にストップワードを減らして試行
+        stop_word_configurations = [
+            # 1回目: 全てのストップワードを使用
+            base_stop_words + extra_stop_words,
+            # 2回目: MAJOR_COLORSを除外
+            base_stop_words + [word for word in extra_stop_words if word not in MAJOR_COLORS],
+            # 3回目: 'shape'も除外
+            base_stop_words + [word for word in extra_stop_words if word not in MAJOR_COLORS and word != 'shape'],
+            # 4回目: ベースのストップワードのみ
+            base_stop_words,
+            # 5回目: ストップワードなし
+            None
+        ]
         
-        # スコア順に並べる
-        if order.lower() == 'high':
-            # 高い順（降順）
-            sorted_idx = sum_scores.argsort()[::-1]
-        elif order.lower() == 'low':
-            # 低い順（昇順）
-            sorted_idx = sum_scores.argsort()
-        else:
-            raise ValueError("order parameter must be 'high' or 'low'")
+        for attempt, stop_words in enumerate(stop_word_configurations, 1):
+            try:
+                vectorizer = TfidfVectorizer(stop_words=stop_words)
+                tfidf_matrix = vectorizer.fit_transform(documents)
+                
+                # 各語彙のスコア（文書全体での合計スコア）
+                sum_scores = np.asarray(tfidf_matrix.sum(axis=0))[0]
+                terms = vectorizer.get_feature_names_out()
+                
+                # スコア順に並べる
+                if order.lower() == 'high':
+                    # 高い順（降順）
+                    sorted_idx = sum_scores.argsort()[::-1]
+                elif order.lower() == 'low':
+                    # 低い順（昇順）
+                    sorted_idx = sum_scores.argsort()
+                else:
+                    raise ValueError("order parameter must be 'high' or 'low'")
+                
+                # 指定された最大語数まで結果を取得
+                result = []
+                for i, idx in enumerate(sorted_idx[:max_words]):
+                    word = terms[idx]
+                    score = sum_scores[idx]
+                    result.append((word, float(score)))
+                
+                if attempt > 1:
+                    print(f"TF-IDF成功: {attempt}回目の試行でストップワード設定を調整しました")
+                
+                return result
+                
+            except ValueError as e:
+                if "empty vocabulary" in str(e):
+                    print(f"TF-IDF試行 {attempt}: 空の語彙エラー - ストップワードを調整して再試行")
+                    continue
+                else:
+                    raise e
         
-        # 指定された最大語数まで結果を取得
-        result = []
-        for i, idx in enumerate(sorted_idx[:max_words]):
-            word = terms[idx]
-            score = sum_scores[idx]
-            result.append((word, float(score)))
-        
-        return result
+        # 全ての試行が失敗した場合
+        print("警告: TF-IDFで語彙を取得できませんでした。空のリストを返します。")
+        return []
         
         
 class InitClusteringManager:
@@ -200,6 +234,62 @@ class InitClusteringManager:
         
         return best_k, float(best_score) if best_score >= 0 else (1, -1.0)
     
+    def _merge_folders_by_name(self, folder_dict: dict) -> dict:
+        """
+        同じ名前のフォルダをまとめる
+        
+        Args:
+            folder_dict: フォルダの辞書 {folder_id: {data, is_leaf, name}}
+            
+        Returns:
+            dict: 同じ名前のフォルダをまとめた辞書
+        """
+        if not folder_dict:
+            return folder_dict
+            
+        # 名前ごとにフォルダをグループ化
+        name_groups = {}
+        for folder_id, folder_info in folder_dict.items():
+            folder_name = folder_info.get('name', folder_id)
+            if folder_name not in name_groups:
+                name_groups[folder_name] = []
+            name_groups[folder_name].append((folder_id, folder_info))
+        
+        # 名前が重複していないフォルダはそのまま、重複しているフォルダはまとめる
+        merged_dict = {}
+        for folder_name, folder_list in name_groups.items():
+            if len(folder_list) == 1:
+                # 重複なし：そのまま追加
+                folder_id, folder_info = folder_list[0]
+                merged_dict[folder_id] = folder_info
+            else:
+                # 重複あり：まとめる
+                print(f"同じ名前 '{folder_name}' のフォルダを {len(folder_list)} 個まとめます")
+                
+                # 新しいフォルダIDを生成
+                merged_folder_id = Utils.generate_uuid()
+                merged_data = {}
+                all_is_leaf = True
+                
+                for folder_id, folder_info in folder_list:
+                    if folder_info.get('is_leaf', False):
+                        # リーフノードの場合：dataを直接マージ
+                        if isinstance(folder_info.get('data'), dict):
+                            merged_data.update(folder_info['data'])
+                    else:
+                        # 非リーフノードの場合：子フォルダをマージ
+                        all_is_leaf = False
+                        if isinstance(folder_info.get('data'), dict):
+                            merged_data.update(folder_info['data'])
+                
+                merged_dict[merged_folder_id] = {
+                    'data': merged_data,
+                    'is_leaf': all_is_leaf,
+                    'name': folder_name
+                }
+        
+        return merged_dict
+
     def _add_parent_ids(self, clustering_dict: dict, parent_id: str = None) -> dict:
         """
         全ての要素にparent_idを追加する再帰関数
@@ -246,196 +336,308 @@ class InitClusteringManager:
         output_json: bool = False
     ):
         
-        #結果を保持するdict
-        result_clustering_uuid_dict = dict()
-        sentence_embeddings_np = np.array(sentence_name_db_data['embeddings'])
+        print(f"Usage → Name 2段階クラスタリングアルゴリズム開始")
+        print(f"Total documents: {len(sentence_name_db_data['ids'])}")
         
-        sentence_documents_data = sentence_name_db_data['documents']
-        print(f"Documents count: {len(sentence_documents_data)}")
-        sentence_document_data_embeddings = []
-        for document in sentence_documents_data:
-            sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(document.document)
-            sentence_document_data_embeddings.append(sentence_document_embedding)
-        
-        print(f"1段階目 文章特徴量でクラスタリング（名前ベース）")
-        #クラスタ数が1以下の場合全てを同一のクラスタとして処理
-        if(cluster_num<=1):
-            folder_id = Utils.generate_uuid()
-            result_clustering_uuid_dict[folder_id] = {}
-            result_clustering_uuid_dict[folder_id]['data'] = {}
-            
-            for idx,_sentence_id in enumerate(sentence_name_db_data['ids']):
-
-                _clustering_id = sentence_id_dict[_sentence_id]['clustering_id']
-                result_clustering_uuid_dict[folder_id]['data'][_clustering_id]= sentence_name_db_data['metadatas'][idx].path
-
-            result_clustering_uuid_dict[folder_id]['is_leaf']=True
-            result_clustering_uuid_dict[folder_id]['name']=folder_id
-        else:  
-            # 通常通りクラスタリング
-            model = AgglomerativeClustering(n_clusters=cluster_num)
-            labels = model.fit_predict(sentence_embeddings_np)
-
-            #インデックスで出力されるクラスタリング結果の格納用の一時辞書
-            tmp_result_dict = dict()
-            for idx in range(cluster_num):
-                folder_id = Utils.generate_uuid()
-                tmp_result_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
-            
-            for i,label in enumerate(labels):
-                _sentence_id = sentence_name_db_data['ids'][i]
-
-                _clustering_id = sentence_id_dict[_sentence_id]['clustering_id']
-                tmp_result_dict[label]['data'][_clustering_id] = sentence_name_db_data['metadatas'][i].path
-                tmp_result_dict[label]['captions'][_clustering_id] = sentence_name_db_data['documents'][i].document
-
-            with open('test_new.json', 'w') as f:
-                json.dump(tmp_result_dict, f, indent=2)
-            #結果用にjson成形
-            for tmp_value_1 in tmp_result_dict.values():
-                
-                
-                
-                important_word = ClusteringUtils.get_tfidf_from_documents_array(documents=list(tmp_value_1['captions'].values()),max_words=1,extra_stop_words=['object','main']+MAJOR_COLORS)
-                print(important_word)
-                result_clustering_uuid_dict[tmp_value_1['folder_id']]=dict()
-                result_clustering_uuid_dict[tmp_value_1['folder_id']]['data'] = tmp_value_1['data']
-                result_clustering_uuid_dict[tmp_value_1['folder_id']]['is_leaf']=True
-                result_clustering_uuid_dict[tmp_value_1['folder_id']]['name']=important_word[0][0]
-        
-        print(f"2段階目 凝集度が低いものを画像特徴量でクラスタリング")
-        #コサイン類似度で凝集度を判定する関数
-        def _cohesion_cosine_similarity(vectors: list[float]) -> float:
-            vectors_np = np.array(vectors)
-            similarity_matrix = cosine_similarity(vectors_np)
-            n = len(vectors_np)
-            if n < 2:
-                return 1.0
-            total = np.sum(similarity_matrix) - n
-            return total / (n * (n - 1))
-        
-        #1階層目のresult_uuid_dictを保存
-        result_id_dict_1 = copy.deepcopy(result_clustering_uuid_dict)
-        
-        for cluster_folder_id,value in result_clustering_uuid_dict.items():
-            
-            result_clustering_uuid_inner_dict = dict()
-            _clustering_id_keys = list(value['data'].keys())
-            
-            #クラスタ内の画像の文章データベースのIDを抽出
-            target_sentence_ids = []
-            for _clustering_id in _clustering_id_keys:
-
-                target_sentence_ids.append(clustering_id_dict[_clustering_id]['sentence_id'])
-
-            # sentence_name_dbを使用して凝集度を計算
-            sentence_data_in_cluster = self._sentence_name_db.get_data_by_sentence_ids(target_sentence_ids)
-            
-            cohesion_cosine_similarity = _cohesion_cosine_similarity(vectors=sentence_data_in_cluster['embeddings'])
-            #凝集度がすでに一定以上の場合以降の処理をスキップする
-            if(cohesion_cosine_similarity>self.COHESION_THRESHOLD):
-                continue
-            
-            target_image_ids = []
-            for _clustering_id in _clustering_id_keys:
-                target_image_ids.append(clustering_id_dict[_clustering_id]['image_id'])
-
-            image_data_in_cluster = self._image_db.get_data_by_ids(target_image_ids)
-            
-            inner_cluster_num, _ = self.get_optimal_cluster_num(embeddings=image_data_in_cluster['embeddings'],max_cluster_num=12)
-            #結果としてクラスタ数が1以下の場合もスキップする
-            if inner_cluster_num <=1:
-                continue
-            
-            image_embeddings_np = np.array(image_data_in_cluster['embeddings'])
-            model = AgglomerativeClustering(n_clusters=inner_cluster_num)
-            labels = model.fit_predict(image_embeddings_np)
-            
-            #インデックスで出力されるクラスタリング結果の格納用の一時辞書
-            tmp_result_inner_dict = dict()
-            for idx in range(inner_cluster_num):
-                folder_id = Utils.generate_uuid()
-                tmp_result_inner_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
-
-            for i,label in enumerate(labels):
-                _image_id = image_data_in_cluster['ids'][i]
-                
-                _clustering_id = image_id_dict[_image_id]['clustering_id']
-                tmp_result_inner_dict[label]['data'][_clustering_id] = image_data_in_cluster['metadatas'][i].path
-
-            
-            #結果用にjson成形
-            for inner_value in tmp_result_inner_dict.values():
-                result_clustering_uuid_inner_dict[inner_value['folder_id']]=dict()
-                result_clustering_uuid_inner_dict[inner_value['folder_id']]['data'] = inner_value['data']
-                result_clustering_uuid_inner_dict[inner_value['folder_id']]['is_leaf']=True
-                result_clustering_uuid_inner_dict[inner_value['folder_id']]['name']=inner_value['folder_id']
-                
-            result_clustering_uuid_dict[cluster_folder_id]['data']=result_clustering_uuid_inner_dict
-            result_clustering_uuid_dict[cluster_folder_id]['is_leaf']=False
-            result_clustering_uuid_dict[cluster_folder_id]['name']=cluster_folder_id
-        
-        print(f"3段階目 文章特徴量でさらに上位階層でクラスタリング（カテゴリベース）")
-        
-        #上位階層クラスタリング用のdictを作成
-        upper_sentence_dict = dict()
-
-        for idx,(_folder_id,result_value) in enumerate(result_id_dict_1.items()):
-            ids = list(result_value['data'].keys())
-
-            # sentence_idを直接取得
-            target_sentence_ids = []
-            for id in ids:
-                target_sentence_ids.append(clustering_id_dict[id]['sentence_id'])
-
-            # sentence_category_dbを使用して上位階層のクラスタリングを行う
-            upper_sentence_data = self._sentence_category_db.get_data_by_sentence_ids(target_sentence_ids)
-            
-            documents_data = upper_sentence_data['documents']
-            upper_sentence_document_embeddings = []
-            for document in documents_data:
-                upper_sentence_document_embedding = SentenceEmbeddingsManager.sentence_to_embedding(document.document)
-                upper_sentence_document_embeddings.append(upper_sentence_document_embedding)
-            
-            upper_embeddings_np = np.array(upper_sentence_document_embeddings)
-             
-            ave_upper_embeddings = np.average(upper_embeddings_np,axis=0).tolist()
-            upper_sentence_dict[idx]={}
-            upper_sentence_dict[idx]['embeddings']=ave_upper_embeddings
-            upper_sentence_dict[idx]['folder_id']=_folder_id
-        
-        upper_cluster_num,_ = self.get_optimal_cluster_num(np.array([v['embeddings'] for v in upper_sentence_dict.values()]),min_cluster_num=2,max_cluster_num=int(len(list(upper_sentence_dict.values()))/2))
-        print(f"上位階層クラスタ数：{upper_cluster_num}")
-        model = AgglomerativeClustering(n_clusters=upper_cluster_num)
-        labels = model.fit_predict(np.array([v['embeddings'] for v in upper_sentence_dict.values()]))
-        
-        #結果のクラスタ用のdict
-        upper_result_dict = dict()
-        for idx in range(upper_cluster_num):
-            folder_id = Utils.generate_uuid()
-            upper_result_dict[idx] = {'folder_id': folder_id, 'data': {},'captions':{}}
-        for idx,label in enumerate(labels):
-            upper_result_dict[label]['data'].append(upper_sentence_dict[idx]['folder_id'])
-        
-        upper_result_clustering_uuid_dict = {value["folder_id"]: {"is_leaf": False, "data": {}, "name": value["folder_id"]}for value in upper_result_dict.values()}
-        for value in upper_result_dict.values():
-            upper_folder_id = value['folder_id']
-            
-            #分類されている子フォルダが一つの場合内部のデータを上の階層に持ってきて階層を一つ減らす
-            if(len(value['data'])==1):
-                upper_result_clustering_uuid_dict[upper_folder_id]['data']=result_clustering_uuid_dict[value['data'][0]]['data']
-                upper_result_clustering_uuid_dict[upper_folder_id]['is_leaf']=result_clustering_uuid_dict[value['data'][0]]['is_leaf']
-                upper_result_clustering_uuid_dict[upper_folder_id]['name']=upper_folder_id
-            else:
-                for _inner_folder_id in value['data']:
-                    upper_result_clustering_uuid_dict[upper_folder_id]['data'][_inner_folder_id]= result_clustering_uuid_dict[_inner_folder_id]
-                upper_result_clustering_uuid_dict[upper_folder_id]['name']=upper_folder_id
-                
         # JSON出力オプションまたはフォルダ出力オプションがTrueの場合、output_base_pathをクリアして新たに作成
         if output_json or output_folder:
             if self.output_base_path.exists():
                 shutil.rmtree(self.output_base_path)
                 os.makedirs(self.output_base_path, exist_ok=True)
+        
+        print("\n1段階目: Usage DB でクラスタリング")
+        # Usage DBからデータを取得
+        usage_data = self._sentence_usage_db.get_data_by_sentence_ids(sentence_id_dict.keys())
+        usage_cluster_num, _ = self.get_optimal_cluster_num(
+            embeddings=usage_data['embeddings'], 
+            min_cluster_num=2, 
+            max_cluster_num=min(10, len(sentence_id_dict.keys())//2)
+        )
+        
+        print(f"Usage クラスタ数: {usage_cluster_num}")
+        
+        if usage_cluster_num <= 1:
+            print("Usage クラスタ数が1以下のため、全体をName DBで直接クラスタリング")
+            # Usage で分類できない場合は、Name DBで直接クラスタリング
+            name_data = self._sentence_name_db.get_data_by_sentence_ids(sentence_id_dict.keys())
+            name_cluster_num, _ = self.get_optimal_cluster_num(
+                embeddings=name_data['embeddings'], 
+                min_cluster_num=2, 
+                max_cluster_num=min(10, len(sentence_id_dict.keys())//2)
+            )
+            
+            if name_cluster_num <= 1:
+                print("Name クラスタ数も1以下のため、全体を1つのリーフノードとして処理")
+                # 単一クラスタの場合、リーフノードとして処理
+                
+                # 対応するclustering_idを取得
+                clustering_ids_all = []
+                for sentence_id in sentence_id_dict.keys():
+                    if sentence_id in sentence_id_dict:
+                        clustering_ids_all.append(sentence_id_dict[sentence_id]['clustering_id'])
+                
+                # リーフノードとして処理
+                leaf_data = {}
+                leaf_captions = []
+                for clustering_id in clustering_ids_all:
+                    # sentence_idからclustering_idに対応するmetadataを取得
+                    sentence_id = None
+                    for cid, ids_dict in clustering_id_dict.items():
+                        if cid == clustering_id:
+                            sentence_id = ids_dict['sentence_id']
+                            break
+                    
+                    if sentence_id:
+                        # sentence_name_db_dataから該当するmetadataを取得
+                        for i, sid in enumerate(sentence_name_db_data['ids']):
+                            if sid == sentence_id:
+                                leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
+                                leaf_captions.append(sentence_name_db_data['documents'][i].document)
+                                break
+                
+                # TF-IDFで名前を決定
+                if leaf_captions:
+                    important_word = ClusteringUtils.get_tfidf_from_documents_array(
+                        documents=leaf_captions,
+                        max_words=1,
+                        extra_stop_words=['object','main'] + MAJOR_COLORS + MAJOR_SHAPES
+                    )
+                    folder_name = important_word[0][0] if important_word else Utils.generate_uuid()
+                else:
+                    folder_name = Utils.generate_uuid()
+                
+                main_folder_id = Utils.generate_uuid()
+                result_dict = {
+                    main_folder_id: {
+                        'data': leaf_data,
+                        'is_leaf': True,
+                        'name': folder_name
+                    }
+                }
+            else:
+                # Name でクラスタリング実行
+                model = AgglomerativeClustering(n_clusters=name_cluster_num)
+                labels = model.fit_predict(np.array(name_data['embeddings']))
+                
+                # クラスタごとにsentence_idを分類
+                name_clusters = {}
+                for i, label in enumerate(labels):
+                    if label not in name_clusters:
+                        name_clusters[label] = []
+                    name_clusters[label].append(name_data['ids'][i])
+                
+                # Name レベルの結果を構築
+                result_dict = {}
+                for name_idx, sentence_ids_in_name in name_clusters.items():
+                    name_folder_id = Utils.generate_uuid()
+                    
+                    # 対応するclustering_idを取得
+                    clustering_ids_in_name = []
+                    for sentence_id in sentence_ids_in_name:
+                        if sentence_id in sentence_id_dict:
+                            clustering_ids_in_name.append(sentence_id_dict[sentence_id]['clustering_id'])
+                    
+                    # リーフノードとして処理
+                    leaf_data = {}
+                    leaf_captions = []
+                    for clustering_id in clustering_ids_in_name:
+                        # sentence_idからclustering_idに対応するmetadataを取得
+                        sentence_id = None
+                        for cid, ids_dict in clustering_id_dict.items():
+                            if cid == clustering_id:
+                                sentence_id = ids_dict['sentence_id']
+                                break
+                        
+                        if sentence_id:
+                            # sentence_name_db_dataから該当するmetadataを取得
+                            for i, sid in enumerate(sentence_name_db_data['ids']):
+                                if sid == sentence_id:
+                                    leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
+                                    leaf_captions.append(sentence_name_db_data['documents'][i].document)
+                                    break
+                    
+                    # TF-IDFで名前を決定
+                    if leaf_captions:
+                        important_word = ClusteringUtils.get_tfidf_from_documents_array(
+                            documents=leaf_captions,
+                            max_words=1,
+                            extra_stop_words=['object','main'] + MAJOR_COLORS + MAJOR_SHAPES
+                        )
+                        folder_name = important_word[0][0] if important_word else name_folder_id
+                    else:
+                        folder_name = name_folder_id
+                    
+                    result_dict[name_folder_id] = {
+                        'data': leaf_data,
+                        'is_leaf': True,
+                        'name': folder_name
+                    }
+        else:
+            # Usage でクラスタリング実行
+            model = AgglomerativeClustering(n_clusters=usage_cluster_num)
+            labels = model.fit_predict(np.array(usage_data['embeddings']))
+            
+            # クラスタごとにsentence_idを分類
+            usage_clusters = {}
+            for i, label in enumerate(labels):
+                if label not in usage_clusters:
+                    usage_clusters[label] = []
+                usage_clusters[label].append(usage_data['ids'][i])
+            
+            # Usage レベルの結果を構築
+            result_dict = {}
+            
+            for usage_idx, sentence_ids_in_usage in usage_clusters.items():
+                usage_folder_id = Utils.generate_uuid()
+                
+                # Usage用のTF-IDF名前決定
+                usage_captions = []
+                for sentence_id in sentence_ids_in_usage:
+                    for i, sid in enumerate(usage_data['ids']):
+                        if sid == sentence_id:
+                            usage_captions.append(usage_data['documents'][i].document)
+                            break
+                
+                if usage_captions:
+                    usage_important_word = ClusteringUtils.get_tfidf_from_documents_array(
+                        documents=usage_captions,
+                        max_words=1,
+                        extra_stop_words=['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES
+                    )
+                    usage_folder_name = usage_important_word[0][0] if usage_important_word else usage_folder_id
+                else:
+                    usage_folder_name = usage_folder_id
+                
+                print(f"\n2段階目: Name DB でクラスタリング (Usage {usage_idx}: {usage_folder_name})")
+                # Name DBからデータを取得
+                name_data = self._sentence_name_db.get_data_by_sentence_ids(sentence_ids_in_usage)
+                name_cluster_num, _ = self.get_optimal_cluster_num(
+                    embeddings=name_data['embeddings'], 
+                    min_cluster_num=2, 
+                    max_cluster_num=min(10, len(sentence_ids_in_usage)//2)
+                )
+                
+                print(f"Name クラスタ数: {name_cluster_num}")
+                
+                if name_cluster_num <= 1:
+                    print("Name クラスタ数が1以下のため、リーフノードとして処理")
+                    # 単一クラスタの場合、リーフノードとして処理
+                    
+                    # 対応するclustering_idを取得
+                    clustering_ids_in_usage = []
+                    for sentence_id in sentence_ids_in_usage:
+                        if sentence_id in sentence_id_dict:
+                            clustering_ids_in_usage.append(sentence_id_dict[sentence_id]['clustering_id'])
+                    
+                    # リーフノードとして処理
+                    leaf_data = {}
+                    leaf_captions = []
+                    for clustering_id in clustering_ids_in_usage:
+                        # sentence_idからclustering_idに対応するmetadataを取得
+                        sentence_id = None
+                        for cid, ids_dict in clustering_id_dict.items():
+                            if cid == clustering_id:
+                                sentence_id = ids_dict['sentence_id']
+                                break
+                        
+                        if sentence_id:
+                            # sentence_name_db_dataから該当するmetadataを取得
+                            for i, sid in enumerate(sentence_name_db_data['ids']):
+                                if sid == sentence_id:
+                                    leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
+                                    leaf_captions.append(sentence_name_db_data['documents'][i].document)
+                                    break
+                    
+                    # TF-IDFで名前を決定
+                    if leaf_captions:
+                        important_word = ClusteringUtils.get_tfidf_from_documents_array(
+                            documents=leaf_captions,
+                            max_words=1,
+                            extra_stop_words=['object','main'] + MAJOR_COLORS + MAJOR_SHAPES
+                        )
+                        folder_name = important_word[0][0] if important_word else usage_folder_name
+                    else:
+                        folder_name = usage_folder_name
+                    
+                    result_dict[usage_folder_id] = {
+                        'data': leaf_data,
+                        'is_leaf': True,
+                        'name': folder_name
+                    }
+                else:
+                    # Name でクラスタリング実行
+                    model = AgglomerativeClustering(n_clusters=name_cluster_num)
+                    labels = model.fit_predict(np.array(name_data['embeddings']))
+                    
+                    # クラスタごとにsentence_idを分類
+                    name_clusters = {}
+                    for i, label in enumerate(labels):
+                        if label not in name_clusters:
+                            name_clusters[label] = []
+                        name_clusters[label].append(name_data['ids'][i])
+                    
+                    # Name レベルの結果を構築
+                    name_result_dict = {}
+                    
+                    for name_idx, sentence_ids_in_name in name_clusters.items():
+                        name_folder_id = Utils.generate_uuid()
+                        
+                        # 対応するclustering_idを取得
+                        clustering_ids_in_name = []
+                        for sentence_id in sentence_ids_in_name:
+                            if sentence_id in sentence_id_dict:
+                                clustering_ids_in_name.append(sentence_id_dict[sentence_id]['clustering_id'])
+                        
+                        # リーフノードとして処理
+                        leaf_data = {}
+                        leaf_captions = []
+                        for clustering_id in clustering_ids_in_name:
+                            # sentence_idからclustering_idに対応するmetadataを取得
+                            sentence_id = None
+                            for cid, ids_dict in clustering_id_dict.items():
+                                if cid == clustering_id:
+                                    sentence_id = ids_dict['sentence_id']
+                                    break
+                            
+                            if sentence_id:
+                                # sentence_name_db_dataから該当するmetadataを取得
+                                for i, sid in enumerate(sentence_name_db_data['ids']):
+                                    if sid == sentence_id:
+                                        leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
+                                        leaf_captions.append(sentence_name_db_data['documents'][i].document)
+                                        break
+                        
+                        # TF-IDFで名前を決定
+                        if leaf_captions:
+                            important_word = ClusteringUtils.get_tfidf_from_documents_array(
+                                documents=leaf_captions,
+                                max_words=1,
+                                extra_stop_words=['object','main'] + MAJOR_COLORS + MAJOR_SHAPES
+                            )
+                            folder_name = important_word[0][0] if important_word else name_folder_id
+                        else:
+                            folder_name = name_folder_id
+                        
+                        name_result_dict[name_folder_id] = {
+                            'data': leaf_data,
+                            'is_leaf': True,
+                            'name': folder_name
+                        }
+                    
+                    # Name段階で同じ名前のフォルダをまとめる
+                    name_result_dict = self._merge_folders_by_name(name_result_dict)
+                    
+                    result_dict[usage_folder_id] = {
+                        'data': name_result_dict,
+                        'is_leaf': False,
+                        'name': usage_folder_name
+                    }
+        
+        # Usage段階で同じ名前のフォルダをまとめる
+        result_dict = self._merge_folders_by_name(result_dict)
+        
+        # 最終的な結果を設定
+        result_clustering_uuid_dict = result_dict
                 
         #フォルダ出力オプションがTrueの時クラスタリング結果をフォルダとして出力
         if output_folder:
@@ -452,7 +654,7 @@ class InitClusteringManager:
                         child_output_path = output_path / Path(folder_id)
                         copy_tree(child_node, child_output_path, images_folder_path)
                         
-            for _folder_id, value in upper_result_clustering_uuid_dict.items():
+            for _folder_id, value in result_clustering_uuid_dict.items():
                 output_path = self.output_base_path / Path(_folder_id)
                 copy_tree(value, output_path, self.images_folder_path)
                 
@@ -465,7 +667,7 @@ class InitClusteringManager:
         # 全体フォルダでラップしてからparent_idを追加
         wrapped_result = {
             overall_folder_id: {
-                "data": upper_result_clustering_uuid_dict,
+                "data": result_clustering_uuid_dict,
                 "parent_id": None,
                 "is_leaf": False,
                 "name": display_name

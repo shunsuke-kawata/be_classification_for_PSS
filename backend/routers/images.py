@@ -129,7 +129,7 @@ async def process_single_upload(
             )
 
         # 画像をPNGに変換して保存
-        png_bytes = image2png(contents)
+        png_bytes = Utils.image2png(contents)
         with open(save_path, "wb") as f:
             f.write(png_bytes)
 

@@ -28,7 +28,7 @@ class CaptionManager:
     
     @classmethod
     def _check_format(cls,sentence:str)->bool:
-        pattern = r'The main object is .+? .+?\.\s*It\'s used for .+?\.\s*Its hypernym is .+?\.'
+        pattern = r'The main object is .+? .+?\.\s*It\'s used for .+?\.\s*Its category is .+?\.'
         return re.match(pattern, sentence) is not None
     
     @classmethod
@@ -44,7 +44,7 @@ class CaptionManager:
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "Explain the image in following sentence format. The main object is {color and shape} {object name}. It's used for {usage of the main object}. Its hypernym is {hypernym of the main object}."
+                                    "text": "Explain the object in the image in following sentence format. The main object is {color and shape} {object name}. It's used for {usage of the main object}. Its category is {category of the main object}."
                                 },
                                 {
                                     "type": "image_url",

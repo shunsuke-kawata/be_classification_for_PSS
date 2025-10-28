@@ -5,6 +5,8 @@ import shutil
 import uuid
 import base64
 import json
+from io import BytesIO
+from PIL import Image
 
 EXPAMPLE_JSON_PATH = Path('captions_20250522_013210.json')
 
@@ -37,4 +39,17 @@ class Utils:
         
         return False,"No caption found."
     
+    @classmethod
+    # 画像ファイルを最高画質でPNGに変換する
+    def image2png(cls,byte_image):
+        # バイトデータを PIL イメージに変換
+        image = Image.open(BytesIO(byte_image))
+
+        # PNGとして最高画質（圧縮率最小 = compress_level=0）で保存
+        png_image_io = BytesIO()
+        image.save(png_image_io, format='PNG', optimize=True, compress_level=0)
+        png_image_io.seek(0)
+
+        return png_image_io.getvalue()
+        
     
