@@ -37,6 +37,7 @@ CREATE TABLE project_memberships (
     user_id INT NOT NULL,
     project_id INT NOT NULL,
     init_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態（0: 未実行, 1: 実行中, 2: 完了 3:失敗 デフォルトは未実行）
+    continuous_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態 (0: 実行不可能, 1: 実行中, 2: 実行可能) 誰かがプロジェクトに画像をアップしたときに全てのユーザのstateを更新する
     mongo_result_id VARCHAR(22) NOT NULL,
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -67,6 +68,24 @@ CREATE TABLE images (
     FOREIGN KEY (uploaded_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- ========================
+-- user_image_clustering_statesテーブル（ユーザごとの画像のクラスタリング状態を管理）
+-- ========================
+CREATE TABLE user_image_clustering_states (
+    user_id INT NOT NULL,
+    image_id INT NOT NULL,
+    project_id INT NOT NULL,
+    is_clustered TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング済みかどうか (0: 未クラスタリング, 1: クラスタリング済み)
+    clustered_at TIMESTAMP(6) NULL DEFAULT NULL, -- クラスタリングされた日時
+    created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+
+    PRIMARY KEY (user_id, image_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
 
 
 
@@ -75,6 +94,9 @@ CREATE TABLE images (
 -- -- インデックス（検索性能向上）
 -- -- ========================
 CREATE INDEX idx_images_project_id ON images(project_id);
+CREATE INDEX idx_user_image_clustering_states_user_id ON user_image_clustering_states(user_id);
+CREATE INDEX idx_user_image_clustering_states_project_id ON user_image_clustering_states(project_id);
+CREATE INDEX idx_user_image_clustering_states_is_clustered ON user_image_clustering_states(is_clustered);
 
 -- ========================
 -- 初期データの挿入

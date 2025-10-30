@@ -12,6 +12,7 @@ from routers.systems import systems_endpoint
 from routers.images import images_endpoint
 from routers.test import test_endpoint
 from routers.action import action_endpoint
+from routers.user_image_clustering_states import user_image_clustering_states_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
 import sys
@@ -67,6 +68,7 @@ app.include_router(systems_endpoint)
 app.include_router(images_endpoint)
 app.include_router(test_endpoint)
 app.include_router(action_endpoint)
+app.include_router(user_image_clustering_states_endpoint)
 
 #バックエンドエンドポイントルート
 @app.get("/",tags=["systems"],description="特に使用しない")

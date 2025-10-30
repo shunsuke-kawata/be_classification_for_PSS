@@ -714,7 +714,7 @@ class InitClusteringManager:
             folder_node = {
                 "type": "folder",
                 "id": folder_id,
-                "name": folder_id,
+                "name": folder_info.get("name",folder_id),
                 "parent_id": parent_id,
                 "is_leaf": folder_info.get("is_leaf", False)
             }

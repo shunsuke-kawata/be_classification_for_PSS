@@ -92,7 +92,36 @@ def join(project_id:str,join_user:JoinUser):
     query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{join_user.user_id}','{project_pass_info['id']}','{mongo_result_id}');"
     
     result,_ = execute_query(session=connect_session,query_text=query_text)
+    
     if not(result is None):
+        # プロジェクト参加成功時、既存の画像に対してuser_image_clustering_statesレコードを作成
+        try:
+            # プロジェクト内の既存画像を取得
+            images_query = f"""
+                SELECT id FROM images WHERE project_id = {join_user.project_id};
+            """
+            images_result, _ = execute_query(session=connect_session, query_text=images_query)
+            
+            if images_result:
+                images = images_result.mappings().all()
+                created_count = 0
+                
+                for image in images:
+                    image_id = image["id"]
+                    # user_image_clustering_statesレコードを作成
+                    state_insert_query = f"""
+                        INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
+                        VALUES ({join_user.user_id}, {image_id}, {join_user.project_id}, 0);
+                    """
+                    state_result, _ = execute_query(session=connect_session, query_text=state_insert_query)
+                    if state_result:
+                        created_count += 1
+                
+                print(f"✅ ユーザ{join_user.user_id}に対して{created_count}個の画像クラスタリング状態レコードを作成しました")
+        except Exception as e:
+            print(f"⚠️ user_image_clustering_states作成エラー: {e}")
+            # エラーが発生してもプロジェクト参加自体は成功しているので処理は続行
+        
         return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to join", "data":None})
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to join", "data":None})

@@ -11,7 +11,7 @@ from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProject
 from pathlib import Path
 from config import DEFAULT_IMAGE_PATH
-
+from clustering.utils import Utils
 
 projects_endpoint = APIRouter()
 
@@ -37,6 +37,7 @@ def read_projects(user_id=None):
                    projects.created_at,
                    projects.updated_at,
                    project_memberships.init_clustering_state,
+                   project_memberships.continuous_clustering_state,
                    project_memberships.mongo_result_id,
                    CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
             FROM projects
@@ -88,6 +89,7 @@ def read_project(project_id: str,user_id=None):
                projects.created_at,
                projects.updated_at,
                project_memberships.init_clustering_state,
+               project_memberships.continuous_clustering_state,
                project_memberships.mongo_result_id,
                CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
             FROM projects
@@ -127,7 +129,7 @@ def create_project(project: NewProject):
     if not validate_data(project, 'project'):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "failed to validate", "data": None})
 
-    original_images_folder_path = generate_uuid()
+    original_images_folder_path = Utils.generate_uuid()
     
     os.makedirs(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path, exist_ok=True)
     if not os.path.exists(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path):

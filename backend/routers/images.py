@@ -217,6 +217,42 @@ async def process_single_upload(
         result, _ = execute_query(connect_session, insert_query)
 
         if result:
+            # 挿入された画像のIDを取得
+            image_id_query = f"""
+                SELECT id FROM images WHERE clustering_id = '{clustering_id}';
+            """
+            image_id_result, _ = execute_query(connect_session, image_id_query)
+            
+            if image_id_result:
+                image_id = image_id_result.mappings().first()["id"]
+                
+                # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成
+                members_query = f"""
+                    SELECT user_id FROM project_memberships WHERE project_id = {project_id};
+                """
+                members_result, _ = execute_query(connect_session, members_query)
+                
+                if members_result:
+                    members = members_result.mappings().all()
+                    for member in members:
+                        user_id = member["user_id"]
+                        state_insert_query = f"""
+                            INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
+                            VALUES ({user_id}, {image_id}, {project_id}, 0);
+                        """
+                        execute_query(connect_session, state_insert_query)
+                    
+                    # 初期クラスタリングが完了している全メンバーのcontinuous_clustering_stateを2（実行可能）に更新
+                    update_continuous_state_query = f"""
+                        UPDATE project_memberships
+                        SET continuous_clustering_state = 2
+                        WHERE project_id = {project_id}
+                        AND init_clustering_state = 2
+                        AND continuous_clustering_state != 1;
+                    """
+                    execute_query(connect_session, update_continuous_state_query)
+                    print(f"✅ プロジェクト{project_id}の全メンバーのcontinuous_clustering_stateを更新しました")
+            
             processing_time = round(time.time() - start_time, 2)
             return UploadResult(
                 filename, 
@@ -421,13 +457,14 @@ async def batch_upload_images(
     success_results = []
     failure_results = []
     
-    for result in results:
+    for i, result in enumerate(results):
         if isinstance(result, Exception):
             failure_count += 1
             failure_results.append({
-                "filename": "unknown",
-                "error": str(result),
-                "error_type": type(result).__name__
+                "filename": files[i].filename if i < len(files) else "unknown",
+                "message": str(result),
+                "error_type": type(result).__name__,
+                "data": {}
             })
         elif isinstance(result, UploadResult):
             if result.success:
@@ -444,6 +481,15 @@ async def batch_upload_images(
                     "error_type": result.error_type,
                     "data": result.data
                 })
+        else:
+            # 予期しない結果タイプの場合
+            failure_count += 1
+            failure_results.append({
+                "filename": files[i].filename if i < len(files) else "unknown",
+                "message": "予期しない結果タイプ",
+                "error_type": "UnexpectedResultType",
+                "data": {}
+            })
     
     total_time = round(time.time() - start_time, 2)
     
