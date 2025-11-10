@@ -41,11 +41,16 @@ DEFAULT_OUTPUT_PATH = os.environ.get('DEFAULT_OUTPUT_PATH', 'output')
 NEXT_PUBLIC_DEFAULT_IMAGE_PATH = os.environ.get('NEXT_PUBLIC_DEFAULT_IMAGE_PATH', '/images')
 
 # クラスタリングステータス定義
-class CLUSTERING_STATUS(IntEnum):
+class INIT_CLUSTERING_STATUS(IntEnum):
     NOT_EXECUTED = 0
     EXECUTING = 1
     FINISHED = 2
     FAILED = 3
+
+class CONTINUOUS_CLUSTERING_STATUS(IntEnum):
+    NOT_EXECUTABLE = 0
+    EXECUTING = 1
+    EXECUTABLE = 2
 
 MAJOR_COLORS = colors = [
     "red", "blue", "yellow", "green", "orange", "purple", "pink", "brown",

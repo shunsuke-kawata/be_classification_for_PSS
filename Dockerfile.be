@@ -1,4 +1,4 @@
-FROM python:3.12
+FROM python:3.11
 
 WORKDIR /app
 
@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y \
     libmariadb-dev \
     libmariadb-dev-compat \
     default-libmysqlclient-dev \
-    build-essential
+    build-essential \
+    cmake
 
 COPY ./backend/requirements.txt .
 

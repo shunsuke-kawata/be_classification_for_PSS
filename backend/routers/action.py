@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from db_utils.commons import create_connect_session,execute_query
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, LoginUser,JoinUser
-from config import CLUSTERING_STATUS,DEFAULT_IMAGE_PATH,DEFAULT_OUTPUT_PATH
+from config import INIT_CLUSTERING_STATUS,CONTINUOUS_CLUSTERING_STATUS,DEFAULT_IMAGE_PATH,DEFAULT_OUTPUT_PATH
 from clustering.clustering_manager import ChromaDBManager, InitClusteringManager
 from clustering.mongo_db_manager import MongoDBManager
 from clustering.mongo_db_manager import MongoDBManager
@@ -141,7 +141,7 @@ def copy_clustering_data(
             )
         
         source_data = source_result.mappings().first()
-        if source_data["init_clustering_state"] != CLUSTERING_STATUS.FINISHED:
+        if source_data["init_clustering_state"] != INIT_CLUSTERING_STATUS.FINISHED:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"message": "source user has not completed init clustering", "data": None}
@@ -187,7 +187,7 @@ def copy_clustering_data(
         # 5. コピー先ユーザーのinit_clustering_stateを2（完了）に更新
         update_state_query = f"""
             UPDATE project_memberships
-            SET init_clustering_state = {CLUSTERING_STATUS.FINISHED}
+            SET init_clustering_state = {INIT_CLUSTERING_STATUS.FINISHED}
             WHERE user_id = {target_user_id} AND project_id = {project_id};
         """
         _, _ = execute_query(session=connect_session, query_text=update_state_query)
@@ -269,7 +269,7 @@ def execute_init_clustering(
     original_images_folder_path = result_mappings["original_images_folder_path"]
     mongo_result_id = result_mappings["mongo_result_id"]
 
-    if init_clustering_state == CLUSTERING_STATUS.EXECUTING or init_clustering_state ==CLUSTERING_STATUS.FINISHED:
+    if init_clustering_state == INIT_CLUSTERING_STATUS.EXECUTING or init_clustering_state ==INIT_CLUSTERING_STATUS.FINISHED:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"message": "init clustering already started", "data": None}
@@ -302,7 +302,7 @@ def execute_init_clustering(
         
         by_clustering_id[cid] = {"sentence_id": sid, "image_id": iid}
         by_chromadb_sentence_id[sid] = {"clustering_id": cid, "image_id": iid}
-        by_chromadb_image_id[iid] = {"clustering_id": cid}
+        by_chromadb_image_id[iid] = {"clustering_id": cid,"sentence_id":sid}
     
     # バックグラウンド処理に渡す関数
     def run_clustering(cid_dict: dict, sid_dict: dict, iid_dict: dict, project_id: int, original_images_folder_path: str):
@@ -359,19 +359,19 @@ def execute_init_clustering(
             print(f"Error during clustering:{e}")
             
             # エラーが発生した場合は初期化状態を更新
-            clustering_state = CLUSTERING_STATUS.FAILED
+            clustering_state = INIT_CLUSTERING_STATUS.FAILED
         else:
-            clustering_state = CLUSTERING_STATUS.FINISHED
+            clustering_state = INIT_CLUSTERING_STATUS.FINISHED
             
             # 初期クラスタリング成功時、該当ユーザの全画像をクラスタリング済みとしてマーク
             try:
                 mark_clustered_query = f"""
                     UPDATE user_image_clustering_states
-                    SET is_clustered = 1, clustered_at = CURRENT_TIMESTAMP(6)
+                    SET is_clustered = 1, executed_clustering_count = 0, clustered_at = CURRENT_TIMESTAMP(6)
                     WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 0;
                 """
                 _, _ = execute_query(session=connect_session, query_text=mark_clustered_query)
-                print(f"✅ ユーザ{user_id}のプロジェクト{project_id}内の全画像をクラスタリング済みとしてマークしました")
+                print(f"✅ ユーザ{user_id}のプロジェクト{project_id}内の全画像をクラスタリング済み(executed_clustering_count=0)としてマークしました")
             except Exception as mark_error:
                 print(f"⚠️ user_image_clustering_states更新エラー: {mark_error}")
         finally:
@@ -390,7 +390,7 @@ def execute_init_clustering(
     # 初期化状態を更新
     update_query = f"""
         UPDATE project_memberships
-        SET init_clustering_state = '{CLUSTERING_STATUS.EXECUTING}'
+        SET init_clustering_state = '{INIT_CLUSTERING_STATUS.EXECUTING}'
         WHERE project_id = {project_id} AND user_id = {user_id};
     """
     #初期化状態を更新
@@ -463,14 +463,14 @@ def execute_continuous_clustering(
     original_images_folder_path = result_mappings["original_images_folder_path"]
 
     # 初期クラスタリングが完了していない場合はエラー
-    if init_clustering_state != CLUSTERING_STATUS.FINISHED:
+    if init_clustering_state != INIT_CLUSTERING_STATUS.FINISHED:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"message": "init clustering not completed yet", "data": None}
         )
 
     # 継続的クラスタリングが実行可能でない場合はエラー
-    if continuous_clustering_state != 2:  # 2 = 実行可能
+    if continuous_clustering_state != CONTINUOUS_CLUSTERING_STATUS.EXECUTABLE:  # 2 = 実行可能
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"message": "continuous clustering is not executable", "data": None}
@@ -504,6 +504,9 @@ def execute_continuous_clustering(
 
     rows = result.mappings().all()
     
+    for row in rows:
+        print("row",row)
+    
     if len(rows) == 0:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -519,29 +522,16 @@ def execute_continuous_clustering(
 
     # コンソールに詳細情報を出力
     print("=" * 80)
-    print("� 継続的クラスタリング リクエスト詳細")
     print("=" * 80)
     print(f"\n📋 対象ユーザー情報:")
     print(f"  - ユーザーID: {user_id}")
     if user_info:
         print(f"  - ユーザー名: {user_info['name']}")
         print(f"  - メールアドレス: {user_info['email']}")
-    print(f"\n📁 プロジェクト情報:")
-    print(f"  - プロジェクトID: {project_id}")
-    print(f"  - MongoResultID: {mongo_result_id}")
-    print(f"  - 画像フォルダパス: {original_images_folder_path}")
-    print(f"\n📊 未クラスタリング画像一覧 (合計: {len(rows)}個):")
     for idx, row in enumerate(rows, 1):
         print(f"\n  [{idx}] 画像情報:")
         print(f"      - 画像ID: {row['image_id']}")
         print(f"      - 画像名: {row['image_name']}")
-        print(f"      - clustering_id: {row['clustering_id']}")
-        print(f"      - chromadb_sentence_id: {row['chromadb_sentence_id']}")
-        print(f"      - chromadb_image_id: {row['chromadb_image_id']}")
-        if row['caption']:
-            caption_preview = row['caption'][:100] + "..." if len(row['caption']) > 100 else row['caption']
-            print(f"      - キャプション: {caption_preview}")
-        print(f"      - 作成日時: {row['created_at']}")
     print("\n" + "=" * 80)
 
     # バックグラウンド処理に渡す関数
@@ -550,41 +540,278 @@ def execute_continuous_clustering(
             print(f"\n🔄 継続的クラスタリング バックグラウンド処理開始")
             print(f"   プロジェクトID: {project_id}")
             print(f"   ユーザーID: {user_id}")
-            print(f"   処理対象画像数: {len(unclustered_rows)}個\n")
+            print(f"   未クラスタリング画像数: {len(unclustered_rows)}")
             
-            # TODO: 実際のクラスタリング処理を実装
-            # 現在は何も処理しない
+            from clustering.mongo_result_manager import ResultManager
+            from clustering.chroma_db_manager import ChromaDBManager
+            from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
+            import numpy as np
+            from sklearn.metrics.pairwise import cosine_similarity
             
-            print(f"⚠️  実際のクラスタリング処理はまだ実装されていません")
-            print(f"   （処理をスキップします）\n")
+            # ResultManagerとChromaDBManagerを初期化
+            result_manager = ResultManager(mongo_result_id)
+            image_db = ChromaDBManager("image_embeddings")
             
-            # 状態は更新しない（テスト用）
-            # mark_clustered_query = f"""
-            #     UPDATE user_image_clustering_states
-            #     SET is_clustered = 1, clustered_at = CURRENT_TIMESTAMP(6)
-            #     WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 0;
-            # """
-            # _, _ = execute_query(session=connect_session, query_text=mark_clustered_query)
+            # 現在のexecuted_clustering_countを取得して+1
+            get_count_query = f"""
+                SELECT executed_clustering_count FROM project_memberships
+                WHERE user_id = {user_id} AND project_id = {project_id};
+            """
+            count_result, _ = execute_query(session=connect_session, query_text=get_count_query)
+            current_count = count_result.mappings().first()['executed_clustering_count']
+            new_count = current_count + 1
             
-            # update_state_query = f"""
-            #     UPDATE project_memberships
-            #     SET continuous_clustering_state = 0
-            #     WHERE user_id = {user_id} AND project_id = {project_id};
-            # """
-            # _, _ = execute_query(session=connect_session, query_text=update_state_query)
+            print(f"📊 現在のクラスタリング回数: {current_count} → 新しい回数: {new_count}")
             
-            print(f"✅ 継続的クラスタリング バックグラウンド処理完了（実処理なし）\n")
+            # すべてのリーフフォルダを取得
+            leaf_folders = result_manager.get_all_leaf_folders()
+            print(f"📂 リーフフォルダ数: {len(leaf_folders)}")
+            
+            if len(leaf_folders) == 0:
+                print("❌ リーフフォルダが見つかりません")
+                return
+            
+            # 各リーフフォルダの画像埋め込みベクトルの平均を計算
+            folder_embeddings = {}
+            for folder in leaf_folders:
+                folder_id = folder['id']
+                
+                # result内でフォルダIDを探索してdataを取得
+                folder_data_result = result_manager.get_folder_data_from_result(folder_id)
+                
+                if not folder_data_result['success']:
+                    print(f"  ⚠️ フォルダ {folder_id} ({folder['name']}) のデータ取得失敗: {folder_data_result.get('error', 'Unknown error')}")
+                    continue
+                
+                # フォルダ内の画像のclustering_idを取得
+                folder_data = folder_data_result['data']
+                if not isinstance(folder_data, dict) or len(folder_data) == 0:
+                    print(f"  ⚠️ フォルダ {folder_id} ({folder['name']}) は空です")
+                    continue
+                
+                clustering_ids = list(folder_data.keys())
+                print(f"  📁 フォルダ {folder['name']} ({folder_id}): {len(clustering_ids)}個の画像を含む")
+                
+                # clustering_idからchromadb_image_idを取得
+                image_ids = []
+                for cid in clustering_ids:
+                    get_image_id_query = f"""
+                        SELECT chromadb_image_id FROM images
+                        WHERE clustering_id = '{cid}' AND project_id = {project_id};
+                    """
+                    img_result, _ = execute_query(session=connect_session, query_text=get_image_id_query)
+                    if img_result:
+                        img_mapping = img_result.mappings().first()
+                        if img_mapping:
+                            image_ids.append(img_mapping['chromadb_image_id'])
+                
+                if len(image_ids) == 0:
+                    continue
+                
+                # ChromaDBから画像の埋め込みベクトルを取得
+                try:
+                    image_data = image_db.get_data_by_ids(image_ids)
+                    embeddings = image_data['embeddings']
+                    
+                    # 平均埋め込みベクトルを計算
+                    avg_embedding = np.mean(embeddings, axis=0)
+                    folder_embeddings[folder_id] = avg_embedding
+                    
+                    print(f"  ✅ フォルダ {folder['name']} ({folder_id}): {len(embeddings)}個の画像の平均ベクトル計算完了")
+                except Exception as e:
+                    print(f"  ⚠️ フォルダ {folder_id} の埋め込みベクトル取得エラー: {e}")
+                    continue
+            
+            print(f"\n📊 埋め込みベクトルを持つフォルダ数: {len(folder_embeddings)}")
+            
+            # 各未クラスタリング画像を処理
+            for idx, row in enumerate(unclustered_rows, 1):
+                try:
+                    image_id = row['image_id']
+                    image_name = row['image_name']
+                    clustering_id = row['clustering_id']
+                    chromadb_image_id = row['chromadb_image_id']
+                    
+                    print(f"\n  [{idx}/{len(unclustered_rows)}] 処理中: {image_name} (ID: {image_id})")
+                    
+                    # ChromaDBから画像の埋め込みベクトルを取得
+                    try:
+                        new_image_data = image_db.get_data_by_ids([chromadb_image_id])
+                        new_image_embedding = new_image_data['embeddings'][0]
+                    except Exception as e:
+                        print(f"    ⚠️ 画像埋め込みベクトル取得エラー: {e}")
+                        continue
+                    
+                    # 各フォルダとの類似度を計算
+                    max_similarity = -1
+                    best_folder_id = None
+                    
+                    for folder_id, folder_embedding in folder_embeddings.items():
+                        similarity = cosine_similarity(
+                            [new_image_embedding],
+                            [folder_embedding]
+                        )[0][0]
+                        
+                        if similarity > max_similarity:
+                            max_similarity = similarity
+                            best_folder_id = folder_id
+                    
+                    if best_folder_id is None:
+                        print(f"    ⚠️ 適切なフォルダが見つかりませんでした")
+                        continue
+                    
+                    best_folder = next((f for f in leaf_folders if f['id'] == best_folder_id), None)
+                    folder_name = best_folder['name'] if best_folder else best_folder_id
+                    
+                    print(f"    🎯 最も類似したフォルダ: {folder_name} (類似度: {max_similarity:.4f})")
+                    
+                    # 画像をフォルダに挿入
+                    # imagesテーブルからimage_pathを取得
+                    get_path_query = f"""
+                        SELECT name FROM images WHERE id = {image_id};
+                    """
+                    path_result, _ = execute_query(session=connect_session, query_text=get_path_query)
+                    image_path = path_result.mappings().first()['name']
+                    
+                    insert_result = result_manager.insert_image_to_leaf_folder(
+                        clustering_id=clustering_id,
+                        image_path=image_path,
+                        target_folder_id=best_folder_id
+                    )
+                    
+                    if insert_result['success']:
+                        print(f"    ✅ フォルダに画像を挿入しました")
+                        
+                        # user_image_clustering_statesを更新
+                        update_state_query = f"""
+                            UPDATE user_image_clustering_states
+                            SET is_clustered = 1, 
+                                executed_clustering_count = {new_count}, 
+                                clustered_at = CURRENT_TIMESTAMP(6)
+                            WHERE user_id = {user_id} AND image_id = {image_id};
+                        """
+                        _, _ = execute_query(session=connect_session, query_text=update_state_query)
+                        
+                        # フォルダの埋め込みベクトルを再計算（新しい画像を追加したため）
+                        print(f"    🔄 フォルダ埋め込みベクトルを再計算中...")
+                        try:
+                            # result内でフォルダIDを探索してdataを取得
+                            folder_data_result = result_manager.get_folder_data_from_result(best_folder_id)
+                            if folder_data_result['success']:
+                                folder_data = folder_data_result['data']
+                                clustering_ids = list(folder_data.keys())
+                                
+                                image_ids = []
+                                for cid in clustering_ids:
+                                    get_image_id_query = f"""
+                                        SELECT chromadb_image_id FROM images
+                                        WHERE clustering_id = '{cid}' AND project_id = {project_id};
+                                    """
+                                    img_result, _ = execute_query(session=connect_session, query_text=get_image_id_query)
+                                    if img_result:
+                                        img_mapping = img_result.mappings().first()
+                                        if img_mapping:
+                                            image_ids.append(img_mapping['chromadb_image_id'])
+                                
+                                if len(image_ids) > 0:
+                                    updated_image_data = image_db.get_data_by_ids(image_ids)
+                                    updated_embeddings = updated_image_data['embeddings']
+                                    folder_embeddings[best_folder_id] = np.mean(updated_embeddings, axis=0)
+                                    print(f"    ✅ フォルダ埋め込みベクトル再計算完了 ({len(image_ids)}個の画像)")
+                                else:
+                                    print(f"    ⚠️ フォルダに画像IDが見つかりません")
+                            else:
+                                print(f"    ⚠️ フォルダデータの再取得失敗: {folder_data_result.get('error', 'Unknown error')}")
+                        except Exception as e:
+                            print(f"    ⚠️ フォルダ埋め込みベクトル再計算エラー: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"    ❌ 画像挿入エラー: {insert_result.get('error', 'Unknown error')}")
+                        
+                except Exception as img_error:
+                    print(f"    ❌ 画像処理中にエラー: {img_error}")
+                    continue
+            
+            # project_membershipsのexecuted_clustering_countを更新
+            update_count_query = f"""
+                UPDATE project_memberships
+                SET executed_clustering_count = {new_count}
+                WHERE user_id = {user_id} AND project_id = {project_id};
+            """
+            _, _ = execute_query(session=connect_session, query_text=update_count_query)
+            
+            # 未クラスタリング画像が残っているか確認
+            check_unclustered_query = f"""
+                SELECT COUNT(*) as unclustered_count
+                FROM images i
+                LEFT JOIN user_image_clustering_states uics 
+                    ON i.id = uics.image_id AND uics.user_id = {user_id}
+                WHERE i.project_id = {project_id} 
+                    AND i.is_created_caption = TRUE
+                    AND (uics.is_clustered = 0 OR uics.is_clustered IS NULL);
+            """
+            check_result, _ = execute_query(session=connect_session, query_text=check_unclustered_query)
+            remaining_unclustered = check_result.mappings().first()['unclustered_count']
+            
+            print(f"\n📊 クラスタリング完了後の状態確認:")
+            print(f"   残りの未クラスタリング画像数: {remaining_unclustered}")
+            
+            # 未クラスタリング画像が残っていれば2（実行可能）、なければ0（実行不可能）
+            new_state = 2 if remaining_unclustered > 0 else 0
+            state_description = "実行可能" if new_state == 2 else "実行不可能"
+            
+            update_state_query = f"""
+                UPDATE project_memberships
+                SET continuous_clustering_state = {new_state}
+                WHERE user_id = {user_id} AND project_id = {project_id};
+            """
+            _, _ = execute_query(session=connect_session, query_text=update_state_query)
+            
+            print(f"   continuous_clustering_state: {new_state} ({state_description})")
+            print(f"\n✅ 継続的クラスタリング バックグラウンド処理完了")
+            print(f"   処理した画像数: {len(unclustered_rows)}")
+            print(f"   新しいクラスタリング回数: {new_count}")
             
         except Exception as e:
             print(f"❌ 継続的クラスタリング処理中にエラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            # エラー時も未クラスタリング画像の有無を確認して状態を設定
+            try:
+                check_unclustered_query = f"""
+                    SELECT COUNT(*) as unclustered_count
+                    FROM images i
+                    LEFT JOIN user_image_clustering_states uics 
+                        ON i.id = uics.image_id AND uics.user_id = {user_id}
+                    WHERE i.project_id = {project_id} 
+                        AND i.is_created_caption = TRUE
+                        AND (uics.is_clustered = 0 OR uics.is_clustered IS NULL);
+                """
+                check_result, _ = execute_query(session=connect_session, query_text=check_unclustered_query)
+                remaining_unclustered = check_result.mappings().first()['unclustered_count']
                 
-    # ⚠️ continuous_clustering_stateは更新しない（テスト用）
-    # update_query = f"""
-    #     UPDATE project_memberships
-    #     SET continuous_clustering_state = 1
-    #     WHERE project_id = {project_id} AND user_id = {user_id};
-    # """
-    # _, _ = execute_query(session=connect_session, query_text=update_query)
+                # 未クラスタリング画像が残っていれば2（実行可能）、なければ0（実行不可能）
+                new_state = 2 if remaining_unclustered > 0 else 0
+                
+                update_state_query = f"""
+                    UPDATE project_memberships
+                    SET continuous_clustering_state = {new_state}
+                    WHERE user_id = {user_id} AND project_id = {project_id};
+                """
+                _, _ = execute_query(session=connect_session, query_text=update_state_query)
+                print(f"⚠️ エラー後の状態更新: continuous_clustering_state = {new_state} (未クラスタリング画像: {remaining_unclustered})")
+            except Exception as state_error:
+                print(f"⚠️ エラー後の状態更新に失敗: {state_error}")
+                
+    # continuous_clustering_stateを1（実行中）に更新
+    update_query = f"""
+        UPDATE project_memberships
+        SET continuous_clustering_state = 1
+        WHERE project_id = {project_id} AND user_id = {user_id};
+    """
+    _, _ = execute_query(session=connect_session, query_text=update_query)
     
     # 非同期実行
     background_tasks.add_task(run_continuous_clustering, rows, project_id, user_id, mongo_result_id)
@@ -807,7 +1034,6 @@ async def get_node_info(mongo_result_id: str, node_id: str):
                     }
                 )
         
-        print(f"✅ ノード情報取得成功: {node_id}")
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,

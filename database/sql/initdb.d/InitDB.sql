@@ -38,6 +38,7 @@ CREATE TABLE project_memberships (
     project_id INT NOT NULL,
     init_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態（0: 未実行, 1: 実行中, 2: 完了 3:失敗 デフォルトは未実行）
     continuous_clustering_state TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング状態 (0: 実行不可能, 1: 実行中, 2: 実行可能) 誰かがプロジェクトに画像をアップしたときに全てのユーザのstateを更新する
+    executed_clustering_count INT NOT NULL DEFAULT 0, -- 実行されたクラスタリング回数（0: 初期クラスタリング）
     mongo_result_id VARCHAR(22) NOT NULL,
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
@@ -76,6 +77,7 @@ CREATE TABLE user_image_clustering_states (
     image_id INT NOT NULL,
     project_id INT NOT NULL,
     is_clustered TINYINT(1) NOT NULL DEFAULT 0, -- クラスタリング済みかどうか (0: 未クラスタリング, 1: クラスタリング済み)
+    executed_clustering_count INT NULL DEFAULT NULL, -- この画像がクラスタリングされた回数（NULL: 未クラスタリング, 0: 初期クラスタリング, 1~: 継続的クラスタリング）
     clustered_at TIMESTAMP(6) NULL DEFAULT NULL, -- クラスタリングされた日時
     created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),

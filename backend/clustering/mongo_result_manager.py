@@ -590,7 +590,6 @@ class ResultManager:
                     "error": f"Node with id '{node_id}' not found"
                 }
             
-            print(f"✅ ノード情報取得成功: {node_id}")
             
             return {
                 "success": True,
@@ -605,3 +604,143 @@ class ResultManager:
                 "node_id": node_id,
                 "error": str(e)
             }
+    
+    def insert_image_to_leaf_folder(self, clustering_id: str, image_path: str, target_folder_id: str) -> dict:
+        """
+        指定されたリーフフォルダに画像を追加する
+        
+        Args:
+            clustering_id (str): クラスタリングID
+            image_path (str): 画像のパス
+            target_folder_id (str): 挿入先のフォルダID（リーフフォルダ）
+            
+        Returns:
+            dict: 挿入結果
+            成功時: {"success": True, "folder_id": str, "clustering_id": str}
+            失敗時: {"success": False, "error": str}
+        """
+        try:
+            print(f"📥 insert_image_to_leaf_folder呼び出し:")
+            print(f"   clustering_id: {clustering_id}")
+            print(f"   image_path: {image_path}")
+            print(f"   target_folder_id: {target_folder_id}")
+            
+            # all_nodesから対象フォルダを取得
+            all_nodes = self.get_all_nodes()
+            if not all_nodes:
+                return {"success": False, "error": "No clustering results found"}
+            
+            target_node = all_nodes.get(target_folder_id)
+            if not target_node:
+                return {"success": False, "error": f"Folder {target_folder_id} not found"}
+            
+            if not target_node.get('is_leaf', False):
+                return {"success": False, "error": f"Folder {target_folder_id} is not a leaf folder"}
+            
+            # resultから対象フォルダを検索して画像を追加
+            def add_image_recursive(node: dict, target_id: str) -> bool:
+                for folder_id, folder_data in node.items():
+                    if folder_id == target_id:
+                        # リーフフォルダに画像を追加
+                        if folder_data.get('is_leaf', False):
+                            folder_data['data'][clustering_id] = image_path
+                            print(f"✅ 画像を追加: {clustering_id} -> {target_id}")
+                            return True
+                    elif not folder_data.get('is_leaf', False) and isinstance(folder_data.get('data'), dict):
+                        # 再帰的に探索
+                        if add_image_recursive(folder_data['data'], target_id):
+                            return True
+                return False
+            
+            result = self.get_result()
+            if not add_image_recursive(result, target_folder_id):
+                return {"success": False, "error": f"Failed to add image to folder {target_folder_id}"}
+            
+            # all_nodesを更新
+            if 'data' not in target_node:
+                target_node['data'] = {}
+            target_node['data'][clustering_id] = image_path
+            
+            # MongoDBに変更をコミット
+            self.update_result(result, all_nodes)
+            
+            print(f"✅ insert_image_to_leaf_folder完了")
+            return {
+                "success": True,
+                "folder_id": target_folder_id,
+                "clustering_id": clustering_id
+            }
+            
+        except Exception as e:
+            print(f"❌ insert_image_to_leaf_folder処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_all_leaf_folders(self) -> List[dict]:
+        """
+        すべてのリーフフォルダ（is_leaf=True）を取得する
+        
+        Returns:
+            List[dict]: リーフフォルダのリスト [{"id": str, "name": str, "parent_id": str}, ...]
+        """
+        try:
+            all_nodes = self.get_all_nodes()
+            if not all_nodes:
+                return []
+            
+            leaf_folders = []
+            for node_id, node_data in all_nodes.items():
+                if node_data.get('is_leaf', False):
+                    leaf_folders.append({
+                        "id": node_id,
+                        "name": node_data.get('name', ''),
+                        "parent_id": node_data.get('parent_id', None)
+                    })
+            
+            print(f"📂 get_all_leaf_folders: {len(leaf_folders)}個のリーフフォルダを取得")
+            return leaf_folders
+            
+        except Exception as e:
+            print(f"❌ get_all_leaf_folders処理中にエラー: {e}")
+            return []
+    
+    def get_folder_data_from_result(self, folder_id: str) -> dict:
+        """
+        result内でフォルダIDを探索して、そのフォルダのdataを取得する
+        
+        Args:
+            folder_id (str): フォルダID
+            
+        Returns:
+            dict: フォルダのdata
+            成功時: {"success": True, "data": {...}}  # dataには画像のclustering_id: pathのマッピング
+            失敗時: {"success": False, "error": str}
+        """
+        try:
+            result = self.get_result()
+            if not result:
+                return {"success": False, "error": "No clustering results found"}
+            
+            # resultを再帰的に探索してフォルダを見つける
+            def find_folder_recursive(node: dict, target_id: str) -> dict:
+                for current_folder_id, folder_data in node.items():
+                    if current_folder_id == target_id:
+                        # 見つかった！
+                        if folder_data.get('is_leaf', False):
+                            # リーフフォルダの場合、dataには画像のマッピングが入っている
+                            return {"success": True, "data": folder_data.get('data', {})}
+                        else:
+                            # 非リーフフォルダの場合
+                            return {"success": True, "data": folder_data.get('data', {})}
+                    elif not folder_data.get('is_leaf', False) and isinstance(folder_data.get('data'), dict):
+                        # 非リーフフォルダの場合、再帰的に探索
+                        result = find_folder_recursive(folder_data['data'], target_id)
+                        if result['success']:
+                            return result
+                
+                return {"success": False, "error": f"Folder {target_id} not found"}
+            
+            return find_folder_recursive(result, folder_id)
+            
+        except Exception as e:
+            print(f"❌ get_folder_data_from_result処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}

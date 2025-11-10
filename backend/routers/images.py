@@ -135,6 +135,8 @@ async def process_single_upload(
 
         # 仮のキャプション生成
         is_created, created_caption = Utils.get_exmaple_caption(png_path)
+        if not (is_created):
+            return UploadResult(filename, False, "データベース挿入失敗", error_type="CaptionCreateError")
 
         # ベクトルDBへ登録（3つのデータベースに分けて保存）
         sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
@@ -212,19 +214,19 @@ async def process_single_upload(
         # 新しいスキーマに対応：統一sentence_idを保存
         insert_query = f"""
             INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id, chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{sentence_id}', '{sentence_id}', '{uploaded_user_id}');
+            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{sentence_id}', '{image_id}', '{uploaded_user_id}');
         """
         result, _ = execute_query(connect_session, insert_query)
 
         if result:
-            # 挿入された画像のIDを取得
-            image_id_query = f"""
+            # 挿入された画像のMySQLのID（自動採番）を取得
+            mysql_image_id_query = f"""
                 SELECT id FROM images WHERE clustering_id = '{clustering_id}';
             """
-            image_id_result, _ = execute_query(connect_session, image_id_query)
+            mysql_image_id_result, _ = execute_query(connect_session, mysql_image_id_query)
             
-            if image_id_result:
-                image_id = image_id_result.mappings().first()["id"]
+            if mysql_image_id_result:
+                mysql_image_id = mysql_image_id_result.mappings().first()["id"]
                 
                 # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成
                 members_query = f"""
@@ -238,7 +240,7 @@ async def process_single_upload(
                         user_id = member["user_id"]
                         state_insert_query = f"""
                             INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
-                            VALUES ({user_id}, {image_id}, {project_id}, 0);
+                            VALUES ({user_id}, {mysql_image_id}, {project_id}, 0);
                         """
                         execute_query(connect_session, state_insert_query)
                     
@@ -251,7 +253,6 @@ async def process_single_upload(
                         AND continuous_clustering_state != 1;
                     """
                     execute_query(connect_session, update_continuous_state_query)
-                    print(f"✅ プロジェクト{project_id}の全メンバーのcontinuous_clustering_stateを更新しました")
             
             processing_time = round(time.time() - start_time, 2)
             return UploadResult(
@@ -260,8 +261,9 @@ async def process_single_upload(
                 "アップロード成功", 
                 {
                     "clustering_id": clustering_id,
-                    "chromadb_sentence_id": sentence_id,  # 統一ID
-                    "chromadb_image_id": sentence_id,
+                    "chromadb_sentence_id": sentence_id,  # 文章埋め込みのUUID
+                    "chromadb_image_id": image_id,  # 画像埋め込みのUUID
+                    "mysql_image_id": mysql_image_id,  # MySQLの自動採番ID
                     "processing_time": processing_time
                 }
             )
