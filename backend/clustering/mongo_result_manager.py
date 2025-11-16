@@ -908,10 +908,10 @@ class ResultManager:
                   失敗時: {"success": False, "error": str}
         """
         try:
-            import uuid
+            from .utils import Utils
             
-            # 新しいフォルダIDを生成
-            new_folder_id = str(uuid.uuid4())
+            # 新しいフォルダIDを生成（Utilsのgenerate_uuidを使用）
+            new_folder_id = Utils.generate_uuid()
             
             # all_nodesとresultを取得
             all_nodes = self.get_all_nodes()
@@ -942,8 +942,9 @@ class ResultManager:
             all_nodes[new_folder_id] = new_folder_node
             all_nodes[initial_clustering_id] = new_file_node
             
-            # resultに新しいフォルダを追加
+            # resultに新しいフォルダを追加（nameをフォルダ名として使用）
             new_folder_data = {
+                "name": folder_name,  # フォルダ名を追加
                 "is_leaf": True,
                 "data": {
                     initial_clustering_id: initial_image_path
@@ -951,7 +952,7 @@ class ResultManager:
             }
             
             if parent_id is None:
-                # トップレベルに追加
+                # トップレベルに追加（キーはnew_folder_id）
                 result[new_folder_id] = new_folder_data
             else:
                 # 親フォルダの配下に追加
@@ -961,7 +962,7 @@ class ResultManager:
                         if folder_id == target_parent_id:
                             # 親フォルダが見つかった
                             if not folder_data.get('is_leaf', False):
-                                # 非リーフフォルダの場合、dataに追加
+                                # 非リーフフォルダの場合、dataに追加（キーはnew_folder_id）
                                 folder_data['data'][new_folder_id] = new_folder_data
                                 return True
                             else:
