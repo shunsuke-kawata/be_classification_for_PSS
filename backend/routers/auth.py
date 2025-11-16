@@ -6,7 +6,14 @@ import os
 
 from fastapi.responses import JSONResponse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session,execute_query
+from db_utils.commons import create_connect_session
+from db_utils.auth_queries import (
+    query_user_login,
+    verify_project_password,
+    insert_project_membership,
+    select_images_by_project,
+    insert_user_image_state,
+)
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, LoginUser,JoinUser
 
@@ -32,8 +39,7 @@ def login(login_user:LoginUser):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
     
     #SQLの実行
-    query_text =f"SELECT id, name, password, email, authority FROM users WHERE (name='{login_user.name}' OR email='{login_user.email}') AND password='{login_user.password}';"
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = query_user_login(session=connect_session, name=login_user.name, email=login_user.email, password=login_user.password)
     if result is  None:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to login", "data":None})
     
@@ -71,8 +77,7 @@ def join(project_id:str,join_user:JoinUser):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "invalid project_id", "data":None})
     
     #SQLの実行(プロジェクトのパスワードがあっているかの確認)
-    query_text =f"SELECT id,password FROM projects WHERE id='{id}' AND password='{join_user.project_password}';"
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = verify_project_password(session=connect_session, project_id=id, password=join_user.project_password)
     
     if (result is None):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to join", "data":None})
@@ -89,18 +94,13 @@ def join(project_id:str,join_user:JoinUser):
     mongo_result_id = Utils.generate_uuid()
     
     #SQLの実行
-    query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{join_user.user_id}','{project_pass_info['id']}','{mongo_result_id}');"
-    
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = insert_project_membership(session=connect_session, user_id=join_user.user_id, project_id=project_pass_info['id'], mongo_result_id=mongo_result_id)
     
     if not(result is None):
         # プロジェクト参加成功時、既存の画像に対してuser_image_clustering_statesレコードを作成
         try:
             # プロジェクト内の既存画像を取得
-            images_query = f"""
-                SELECT id FROM images WHERE project_id = {join_user.project_id};
-            """
-            images_result, _ = execute_query(session=connect_session, query_text=images_query)
+            images_result, _ = select_images_by_project(session=connect_session, project_id=join_user.project_id)
             
             if images_result:
                 images = images_result.mappings().all()
@@ -109,11 +109,7 @@ def join(project_id:str,join_user:JoinUser):
                 for image in images:
                     image_id = image["id"]
                     # user_image_clustering_statesレコードを作成
-                    state_insert_query = f"""
-                        INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
-                        VALUES ({join_user.user_id}, {image_id}, {join_user.project_id}, 0);
-                    """
-                    state_result, _ = execute_query(session=connect_session, query_text=state_insert_query)
+                    state_result, _ = insert_user_image_state(session=connect_session, user_id=join_user.user_id, image_id=image_id, project_id=join_user.project_id, is_clustered=0)
                     if state_result:
                         created_count += 1
                 

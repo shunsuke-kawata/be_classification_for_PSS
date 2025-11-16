@@ -5,7 +5,9 @@ import os
 from fastapi.responses import JSONResponse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session,execute_query
+from db_utils.commons import create_connect_session
+from db_utils import project_memberships_queries as pm_queries
+from db_utils.auth_queries import select_images_by_project, insert_user_image_state
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProjectMembership, UpdateProjectMembershipState
 from clustering.utils import Utils
@@ -35,7 +37,7 @@ def read_project_memberships(user_id=None, project_id=None):
             print(e)
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"invalid project_id", "data":None})
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, init_clustering_state, continuous_clustering_state, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE project_id='{id}';"
+        result,_ = pm_queries.get_memberships_by_project(connect_session, id)
     elif(user_id is not None):
         try:
             id = int(user_id)
@@ -43,12 +45,10 @@ def read_project_memberships(user_id=None, project_id=None):
             print(e)
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"invalid project_id", "data":None})
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, init_clustering_state, continuous_clustering_state, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE user_id='{id}';"
+        result,_ = pm_queries.get_memberships_by_user(connect_session, id)
     else:
         # SQLの実行
-        query_text =f"SELECT user_id, project_id, mongo_result_id, init_clustering_state, continuous_clustering_state, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships;"
-        
-    result,_ = execute_query(session=connect_session, query_text=query_text)
+        result,_ = pm_queries.get_all_memberships(connect_session)
     
     if result is not None:
         rows = result.mappings().all()
@@ -78,33 +78,25 @@ def create_project_membership(project_membership:NewProjectMembership):
     print(mongo_result_id)
     
     #SQLの実行
-    query_text =f"INSERT INTO project_memberships(user_id, project_id,mongo_result_id) VALUES ('{project_membership.user_id}','{project_membership.project_id}','{mongo_result_id}');"
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = pm_queries.insert_project_membership(session=connect_session, user_id=project_membership.user_id, project_id=project_membership.project_id, mongo_result_id=mongo_result_id)
     
     if not(result is None):
         # プロジェクトメンバーシップ作成成功時、既存の画像に対してuser_image_clustering_statesレコードを作成
         try:
             # プロジェクト内の既存画像を取得
-            images_query = f"""
-                SELECT id FROM images WHERE project_id = {project_membership.project_id};
-            """
-            images_result, _ = execute_query(session=connect_session, query_text=images_query)
-            
+            images_result, _ = select_images_by_project(session=connect_session, project_id=project_membership.project_id)
+
             if images_result:
                 images = images_result.mappings().all()
                 created_count = 0
-                
+
                 for image in images:
                     image_id = image["id"]
                     # user_image_clustering_statesレコードを作成
-                    state_insert_query = f"""
-                        INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
-                        VALUES ({project_membership.user_id}, {image_id}, {project_membership.project_id}, 0);
-                    """
-                    state_result, _ = execute_query(session=connect_session, query_text=state_insert_query)
+                    state_result, _ = insert_user_image_state(session=connect_session, user_id=project_membership.user_id, image_id=image_id, project_id=project_membership.project_id, is_clustered=0)
                     if state_result:
                         created_count += 1
-                
+
                 print(f"✅ ユーザ{project_membership.user_id}に対して{created_count}個の画像クラスタリング状態レコードを作成しました")
         except Exception as e:
             print(f"⚠️ user_image_clustering_states作成エラー: {e}")
@@ -148,20 +140,20 @@ def update_project_membership_state(state_update: UpdateProjectMembershipState):
     update_clause = ", ".join(update_fields)
     
     #SQLの実行
-    query_text = f"UPDATE project_memberships SET {update_clause} WHERE user_id={state_update.user_id} AND project_id={state_update.project_id};"
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = pm_queries.update_project_membership_state(session=connect_session, user_id=state_update.user_id, project_id=state_update.project_id, init_clustering_state=state_update.init_clustering_state, continuous_clustering_state=state_update.continuous_clustering_state)
     
     if result is not None:
-        # 更新されたレコードを取得
-        query_text = f"SELECT user_id, project_id, init_clustering_state, continuous_clustering_state, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE user_id={state_update.user_id} AND project_id={state_update.project_id};"
-        result, _ = execute_query(session=connect_session, query_text=query_text)
-        
+        # 更新されたレコードを取得（プロジェクト単位で取得して該当ユーザを抽出）
+        result, _ = pm_queries.get_memberships_by_project_after_update(session=connect_session, project_id=state_update.project_id)
+
         if result is not None:
             rows = result.mappings().all()
-            if rows:
-                membership_data = dict(rows[0])
-                return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to update project_membership state", "data": membership_data})
-        
+            # 該当ユーザのレコードを抽出
+            for r in rows:
+                if r.get('user_id') == state_update.user_id:
+                    membership_data = dict(r)
+                    return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to update project_membership state", "data": membership_data})
+
         return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to update project_membership state", "data":None})
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to update project_membership state", "data":None})
@@ -187,31 +179,23 @@ def update_all_members_continuous_state(project_id: int):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"invalid project_id", "data":None})
     
     # プロジェクトが存在するか確認
-    query_text = f"SELECT id FROM projects WHERE id={project_id};"
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = pm_queries.project_exists(session=connect_session, project_id=project_id)
     if result is None or len(result.mappings().all()) == 0:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message":"project not found", "data":None})
     
     # init_clustering_stateが1または2のユーザーのcontinuous_clustering_stateを2に更新
     # init_clustering_stateが0または3のユーザーはそのまま
-    query_text = f"""
-        UPDATE project_memberships 
-        SET continuous_clustering_state = 2 
-        WHERE project_id = {project_id} 
-        AND init_clustering_state IN (1, 2);
-    """
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = pm_queries.update_all_members_continuous_state(session=connect_session, project_id=project_id)
     
     if result is not None:
         # 更新後のプロジェクトメンバーシップ一覧を取得
-        query_text = f"SELECT user_id, project_id, init_clustering_state, continuous_clustering_state, mongo_result_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') as created_at, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%sZ') as updated_at FROM project_memberships WHERE project_id={project_id};"
-        result, _ = execute_query(session=connect_session, query_text=query_text)
-        
+        result, _ = pm_queries.get_memberships_by_project_after_update(session=connect_session, project_id=project_id)
+
         if result is not None:
             rows = result.mappings().all()
             membership_list = [dict(row) for row in rows]
             return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to update continuous_clustering_state for all members", "data": membership_list})
-        
+
         return JSONResponse(status_code=status.HTTP_200_OK,content={"message": "succeeded to update continuous_clustering_state for all members", "data":None})
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to update continuous_clustering_state", "data":None})
@@ -265,7 +249,7 @@ def get_completed_clustering_users(project_id: int):
         ORDER BY pm.updated_at DESC;
     """
     
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = pm_queries.get_completed_clustering_users(session=connect_session, project_id=project_id)
     
     if result is not None:
         rows = result.mappings().all()

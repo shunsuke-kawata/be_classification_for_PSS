@@ -6,7 +6,15 @@ import os
 from fastapi.responses import JSONResponse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session, execute_query
+from db_utils.commons import create_connect_session
+from db_utils.projects_queries import (
+    get_projects,
+    get_projects_for_user,
+    get_project,
+    get_project_for_user,
+    insert_project,
+    delete_project,
+)
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewProject
 from pathlib import Path
@@ -26,26 +34,9 @@ def read_projects(user_id=None):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
 
     if user_id is None:
-        query_text = """
-            SELECT id, name, description,original_images_folder_path, owner_id
-            FROM projects;
-        """
+        result, _ = get_projects(session=connect_session)
     else:
-        query_text = f"""
-            SELECT projects.id, projects.name, projects.description, 
-                   projects.original_images_folder_path, projects.owner_id,
-                   projects.created_at,
-                   projects.updated_at,
-                   project_memberships.init_clustering_state,
-                   project_memberships.continuous_clustering_state,
-                   project_memberships.mongo_result_id,
-                   CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
-            FROM projects
-            LEFT JOIN project_memberships
-            ON projects.id = project_memberships.project_id AND project_memberships.user_id = {user_id};
-        """
-
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+        result, _ = get_projects_for_user(session=connect_session, user_id=user_id)
     if result is not None:
         rows = result.mappings().all()
         res_data = []
@@ -78,27 +69,9 @@ def read_project(project_id: str,user_id=None):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "invalid project_id", "data": None})
 
     if user_id is None:
-        query_text = f"""
-            SELECT id, name, description,original_images_folder_path, owner_id, created_at, updated_at
-            FROM projects WHERE id = {id};
-        """
+        result, _ = get_project(session=connect_session, project_id=id)
     else:
-        query_text = f"""
-            SELECT projects.id, projects.name, projects.description, 
-               projects.original_images_folder_path, projects.owner_id,
-               projects.created_at,
-               projects.updated_at,
-               project_memberships.init_clustering_state,
-               project_memberships.continuous_clustering_state,
-               project_memberships.mongo_result_id,
-               CASE WHEN project_memberships.user_id IS NOT NULL THEN true ELSE false END as joined
-            FROM projects
-            LEFT JOIN project_memberships
-            ON projects.id = project_memberships.project_id
-            WHERE projects.id = {id} AND project_memberships.user_id = {user_id};
-        """
-
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+        result, _ = get_project_for_user(session=connect_session, project_id=id, user_id=user_id)
     if result is not None:
         rows = result.mappings().first()  # 最初の行だけ取得
         
@@ -135,12 +108,7 @@ def create_project(project: NewProject):
     if not os.path.exists(Path(DEFAULT_IMAGE_PATH) / original_images_folder_path):
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to create original images folder", "data": None})
     
-    query_text = f"""
-        INSERT INTO projects(name, password, description,original_images_folder_path, owner_id)
-        VALUES ('{project.name}', '{project.password}', '{project.description}','{original_images_folder_path}', {project.owner_id});
-    """
-
-    result, new_project_id = execute_query(session=connect_session, query_text=query_text)
+    result, new_project_id = insert_project(session=connect_session, name=project.name, password=project.password, description=project.description, original_images_folder_path=original_images_folder_path, owner_id=project.owner_id)
     if result:
         return JSONResponse(status_code=status.HTTP_201_CREATED, content={"message": "succeeded to create project", "data": {"project_id": new_project_id}})
     else:
@@ -162,8 +130,7 @@ def delete_project(project_id: str):
     except Exception:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "invalid project_id", "data": None})
 
-    query_text = f"DELETE FROM projects WHERE id = {id};"
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = delete_project(session=connect_session, project_id=id)
     if result:
         return JSONResponse(status_code=status.HTTP_204_NO_CONTENT)
     else:

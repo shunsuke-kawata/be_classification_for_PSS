@@ -5,7 +5,8 @@ import os
 from fastapi.responses import JSONResponse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session,execute_query
+from db_utils.commons import create_connect_session
+from db_utils.users_queries import select_all_users, insert_user, delete_user
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewUser
 
@@ -22,9 +23,7 @@ def read_users():
     if connect_session is None:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,content={"message": "failed to connect to database", "data":None})
     
-    #SQLの実行
-    query_text =f"SELECT id, name, email, authority FROM users;"
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = select_all_users(session=connect_session)
     if result is not None:
         rows = result.mappings().all()
         user_list = [dict(row) for row in rows]
@@ -49,9 +48,7 @@ def create_user(user:NewUser):
     if not(validate_data(user, 'user')):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "failed to validate", "data":None})
     
-    #SQLの実行
-    query_text =f"INSERT INTO users(name, password, email, authority) VALUES ('{user.name}', '{user.password}', '{user.email}', {user.authority});"
-    result,signup_user_id = execute_query(session=connect_session,query_text=query_text)
+    result,signup_user_id = insert_user(session=connect_session, name=user.name, password=user.password, email=user.email, authority=user.authority)
     if not(result is None):
         return JSONResponse(status_code=status.HTTP_201_CREATED,content={"message": "succeeded to create user", "data":{'user_id':signup_user_id}})
     else:
@@ -81,9 +78,7 @@ def delete_user(user_id:str):
         print(e)
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,content={"message": "invalid user_id", "data":None})
     
-    #SQLの実行
-    query_text =f"DELETE FROM users WHERE id='{id}';"
-    result,_ = execute_query(session=connect_session,query_text=query_text)
+    result,_ = delete_user(session=connect_session, user_id=id)
     if not(result is None):
         return JSONResponse(status_code=status.HTTP_204_NO_CONTENT)
     else:

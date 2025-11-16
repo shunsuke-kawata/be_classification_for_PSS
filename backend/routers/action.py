@@ -1,23 +1,41 @@
 import copy
 import json
+import re
+import traceback
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, status,Response
-import sys
-import os
-
-from fastapi.responses import JSONResponse
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session,execute_query
-from db_utils.validators import validate_data
-from db_utils.models import CustomResponseModel, LoginUser,JoinUser
-from config import INIT_CLUSTERING_STATUS,CONTINUOUS_CLUSTERING_STATUS,DEFAULT_IMAGE_PATH,DEFAULT_OUTPUT_PATH
-from clustering.clustering_manager import ChromaDBManager, InitClusteringManager
-from clustering.mongo_db_manager import MongoDBManager
-from clustering.mongo_db_manager import MongoDBManager
-from fastapi import BackgroundTasks, Query
 from collections import defaultdict
 from typing import List
+
+import numpy as np
+from fastapi import APIRouter, HTTPException, status, Response, BackgroundTasks, Query
+from fastapi.responses import JSONResponse, FileResponse
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer, util
+
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+
+from db_utils.commons import create_connect_session, execute_query
+from db_utils import action_queries, images_queries
+from db_utils.validators import validate_data
+from db_utils.models import CustomResponseModel, LoginUser, JoinUser
+from config import (
+    INIT_CLUSTERING_STATUS,
+    CONTINUOUS_CLUSTERING_STATUS,
+    DEFAULT_IMAGE_PATH,
+    DEFAULT_OUTPUT_PATH,
+    CAPTION_STOPWORDS,
+    MAJOR_COLORS,
+    MAJOR_SHAPES
+)
+from clustering.clustering_manager import ChromaDBManager, InitClusteringManager
+from clustering.mongo_db_manager import MongoDBManager
 from clustering.mongo_result_manager import ResultManager
+from clustering.chroma_db_manager import ChromaDBManager
+from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
+from clustering.utils import Utils
+from clustering.word_analysis import WordAnalyzer
 
 #分割したエンドポイントの作成
 #ログイン操作
@@ -25,7 +43,6 @@ action_endpoint = APIRouter()
 
 @action_endpoint.get("/action/clustering/result/{mongo_result_id}",tags=["action"],description="初期クラスタリング結果を取得する")
 def get_clustering_result(mongo_result_id:str):
-    from clustering.mongo_result_manager import ResultManager
     result_manager = ResultManager(mongo_result_id)
     
     # ResultManagerのget_result()メソッドを使用
@@ -127,12 +144,7 @@ def copy_clustering_data(
     
     try:
         # 1. コピー元ユーザーのinit_clustering_stateが2（完了）かチェック
-        source_check_query = f"""
-            SELECT init_clustering_state, mongo_result_id
-            FROM project_memberships
-            WHERE user_id = {source_user_id} AND project_id = {project_id};
-        """
-        source_result, _ = execute_query(session=connect_session, query_text=source_check_query)
+        source_result, _ = action_queries.get_membership_init_and_mongo(connect_session, source_user_id, project_id)
         
         if not source_result:
             return JSONResponse(
@@ -150,12 +162,7 @@ def copy_clustering_data(
         source_mongo_result_id = source_data["mongo_result_id"]
         
         # 2. コピー先ユーザーのmongo_result_idを取得
-        target_check_query = f"""
-            SELECT mongo_result_id, init_clustering_state
-            FROM project_memberships
-            WHERE user_id = {target_user_id} AND project_id = {project_id};
-        """
-        target_result, _ = execute_query(session=connect_session, query_text=target_check_query)
+        target_result, _ = action_queries.get_membership_init_and_mongo(connect_session, target_user_id, project_id)
         
         if not target_result:
             return JSONResponse(
@@ -185,20 +192,10 @@ def copy_clustering_data(
         target_result_manager.update_result(copied_result, copied_all_nodes)
         
         # 5. コピー先ユーザーのinit_clustering_stateを2（完了）に更新
-        update_state_query = f"""
-            UPDATE project_memberships
-            SET init_clustering_state = {INIT_CLUSTERING_STATUS.FINISHED}
-            WHERE user_id = {target_user_id} AND project_id = {project_id};
-        """
-        _, _ = execute_query(session=connect_session, query_text=update_state_query)
+        _, _ = action_queries.update_init_state(connect_session, target_user_id, project_id, INIT_CLUSTERING_STATUS.FINISHED)
         
         # 6. コピー先ユーザーの全画像をクラスタリング済みとしてマーク
-        mark_clustered_query = f"""
-            UPDATE user_image_clustering_states
-            SET is_clustered = 1, clustered_at = CURRENT_TIMESTAMP(6)
-            WHERE user_id = {target_user_id} AND project_id = {project_id} AND is_clustered = 0;
-        """
-        _, _ = execute_query(session=connect_session, query_text=mark_clustered_query)
+        _, _ = action_queries.mark_user_images_clustered(connect_session, target_user_id, project_id)
         
         print(f"✅ ユーザー{source_user_id}のデータをユーザー{target_user_id}にコピー完了")
         
@@ -249,14 +246,7 @@ def execute_init_clustering(
         )
 
     connect_session = create_connect_session()
-    query_text = f"""
-        SELECT project_memberships.init_clustering_state, project_memberships.mongo_result_id,projects.original_images_folder_path
-        FROM project_memberships
-        JOIN projects ON project_memberships.project_id = projects.id
-        WHERE project_memberships.project_id = {project_id} AND project_memberships.user_id = {user_id};
-    """
-
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = action_queries.get_membership_and_project_info(connect_session, project_id, user_id)
     result_mappings = result.mappings().first()
 
     if result_mappings is None:
@@ -276,13 +266,7 @@ def execute_init_clustering(
         )
 
     # 対象画像の取得
-    query_text = f"""
-        SELECT clustering_id, chromadb_sentence_id, chromadb_image_id
-        FROM images
-        WHERE project_id = {project_id} AND is_created_caption = TRUE;
-    """
-
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    result, _ = action_queries.select_images_for_init(connect_session, project_id)
     if result is None:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -308,10 +292,8 @@ def execute_init_clustering(
     def run_clustering(cid_dict: dict, sid_dict: dict, iid_dict: dict, project_id: int, original_images_folder_path: str):
         try:
             # プロジェクト名を取得
-            project_name_query = f"""
-                SELECT name FROM projects WHERE id = {project_id}
-            """
-            project_result, _ = execute_query(session=connect_session, query_text=project_name_query)
+            # プロジェクト名を取得
+            project_result, _ = action_queries.get_project_name(connect_session, project_id)
             project_mapping = project_result.mappings().first() if project_result else None
             project_name = project_mapping['name'] if project_mapping else f"Project_{project_id}"
             
@@ -352,7 +334,6 @@ def execute_init_clustering(
                 if 'id' in node:
                     all_nodes_dict[node['id']] = node
             
-            from clustering.mongo_result_manager import ResultManager
             result_manager = ResultManager(mongo_result_id)
             result_manager.update_result(result_dict, all_nodes_dict)
         except Exception as e:
@@ -365,36 +346,21 @@ def execute_init_clustering(
             
             # 初期クラスタリング成功時、該当ユーザの全画像をクラスタリング済みとしてマーク
             try:
-                mark_clustered_query = f"""
-                    UPDATE user_image_clustering_states
-                    SET is_clustered = 1, executed_clustering_count = 0, clustered_at = CURRENT_TIMESTAMP(6)
-                    WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 0;
-                """
-                _, _ = execute_query(session=connect_session, query_text=mark_clustered_query)
+                _, _ = action_queries.mark_user_images_clustered_with_executed_count(connect_session, user_id, project_id, 0)
                 print(f"✅ ユーザ{user_id}のプロジェクト{project_id}内の全画像をクラスタリング済み(executed_clustering_count=0)としてマークしました")
             except Exception as mark_error:
                 print(f"⚠️ user_image_clustering_states更新エラー: {mark_error}")
         finally:
             
             # 初期化状態を更新
-            update_query = f"""
-                UPDATE project_memberships
-                SET init_clustering_state = '{clustering_state}'
-                WHERE project_id = {project_id} AND user_id = {user_id};
-            """
-            _, _ = execute_query(session=connect_session, query_text=update_query)
+            _, _ = action_queries.update_init_state(connect_session, user_id, project_id, clustering_state)
                 
     # 非同期実行
     background_tasks.add_task(run_clustering, by_clustering_id, by_chromadb_sentence_id, by_chromadb_image_id, project_id, original_images_folder_path)
     
     # 初期化状態を更新
-    update_query = f"""
-        UPDATE project_memberships
-        SET init_clustering_state = '{INIT_CLUSTERING_STATUS.EXECUTING}'
-        WHERE project_id = {project_id} AND user_id = {user_id};
-    """
-    #初期化状態を更新
-    _, _ = execute_query(session=connect_session, query_text=update_query)
+    # 初期化状態を更新
+    _, _ = action_queries.update_init_state(connect_session, user_id, project_id, INIT_CLUSTERING_STATUS.EXECUTING)
     
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -435,20 +401,9 @@ def execute_continuous_clustering(
         )
 
     connect_session = create_connect_session()
-    
-    # プロジェクトメンバーシップ情報を取得
-    query_text = f"""
-        SELECT 
-            project_memberships.init_clustering_state,
-            project_memberships.continuous_clustering_state,
-            project_memberships.mongo_result_id,
-            projects.original_images_folder_path
-        FROM project_memberships
-        JOIN projects ON project_memberships.project_id = projects.id
-        WHERE project_memberships.project_id = {project_id} AND project_memberships.user_id = {user_id};
-    """
 
-    result, _ = execute_query(session=connect_session, query_text=query_text)
+    # プロジェクトメンバーシップ情報を取得
+    result, _ = action_queries.get_membership_and_project_info(connect_session, project_id, user_id)
     result_mappings = result.mappings().first()
 
     if result_mappings is None:
@@ -462,18 +417,36 @@ def execute_continuous_clustering(
     mongo_result_id = result_mappings["mongo_result_id"]
     original_images_folder_path = result_mappings["original_images_folder_path"]
 
+    # デバッグ情報を出力
+    print(f"\n🔍 継続的クラスタリング状態チェック:")
+    print(f"   init_clustering_state: {init_clustering_state} (期待値: {INIT_CLUSTERING_STATUS.FINISHED})")
+    print(f"   continuous_clustering_state: {continuous_clustering_state} (期待値: {CONTINUOUS_CLUSTERING_STATUS.EXECUTABLE})")
+    print(f"   mongo_result_id: {mongo_result_id}")
+    
     # 初期クラスタリングが完了していない場合はエラー
     if init_clustering_state != INIT_CLUSTERING_STATUS.FINISHED:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": "init clustering not completed yet", "data": None}
+            content={
+                "message": "init clustering not completed yet", 
+                "data": {
+                    "current_init_state": init_clustering_state,
+                    "required_init_state": INIT_CLUSTERING_STATUS.FINISHED
+                }
+            }
         )
 
     # 継続的クラスタリングが実行可能でない場合はエラー
     if continuous_clustering_state != CONTINUOUS_CLUSTERING_STATUS.EXECUTABLE:  # 2 = 実行可能
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": "continuous clustering is not executable", "data": None}
+            content={
+                "message": "continuous clustering is not executable", 
+                "data": {
+                    "current_continuous_state": continuous_clustering_state,
+                    "required_continuous_state": CONTINUOUS_CLUSTERING_STATUS.EXECUTABLE
+                }
+            }
         )
 
     # 未クラスタリング画像の取得（画像の詳細情報も含める）
@@ -494,7 +467,7 @@ def execute_continuous_clustering(
             AND (uics.is_clustered = 0 OR uics.is_clustered IS NULL);
     """
 
-    result, _ = execute_query(session=connect_session, query_text=unclustered_images_query)
+    result, _ = action_queries.get_unclustered_images(connect_session, project_id, user_id)
     
     if result is None:
         return JSONResponse(
@@ -504,20 +477,27 @@ def execute_continuous_clustering(
 
     rows = result.mappings().all()
     
+    print(f"\n📊 未クラスタリング画像の取得結果:")
+    print(f"   取得した画像数: {len(rows)}")
     for row in rows:
-        print("row",row)
+        print(f"   - 画像ID: {row['image_id']}, 名前: {row['image_name']}")
     
     if len(rows) == 0:
+        print(f"⚠️ 未クラスタリング画像が見つかりませんでした")
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": "no unclustered images found", "data": None}
+            content={
+                "message": "no unclustered images found", 
+                "data": {
+                    "project_id": project_id,
+                    "user_id": user_id,
+                    "unclustered_count": 0
+                }
+            }
         )
 
     # ユーザー情報を取得
-    user_info_query = f"""
-        SELECT id, name, email FROM users WHERE id = {user_id};
-    """
-    user_result, _ = execute_query(session=connect_session, query_text=user_info_query)
+    user_result, _ = action_queries.get_user_info(connect_session, user_id)
     user_info = user_result.mappings().first() if user_result else None
 
     # コンソールに詳細情報を出力
@@ -542,22 +522,14 @@ def execute_continuous_clustering(
             print(f"   ユーザーID: {user_id}")
             print(f"   未クラスタリング画像数: {len(unclustered_rows)}")
             
-            from clustering.mongo_result_manager import ResultManager
-            from clustering.chroma_db_manager import ChromaDBManager
-            from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
-            import numpy as np
-            from sklearn.metrics.pairwise import cosine_similarity
-            
             # ResultManagerとChromaDBManagerを初期化
             result_manager = ResultManager(mongo_result_id)
+            # 文章埋め込みベクトルと画像埋め込みベクトルの両方を使用
+            sentence_name_db = ChromaDBManager("sentence_name_embeddings")
             image_db = ChromaDBManager("image_embeddings")
             
             # 現在のexecuted_clustering_countを取得して+1
-            get_count_query = f"""
-                SELECT executed_clustering_count FROM project_memberships
-                WHERE user_id = {user_id} AND project_id = {project_id};
-            """
-            count_result, _ = execute_query(session=connect_session, query_text=get_count_query)
+            count_result, _ = action_queries.get_executed_clustering_count(connect_session, user_id, project_id)
             current_count = count_result.mappings().first()['executed_clustering_count']
             new_count = current_count + 1
             
@@ -571,8 +543,9 @@ def execute_continuous_clustering(
                 print("❌ リーフフォルダが見つかりません")
                 return
             
-            # 各リーフフォルダの画像埋め込みベクトルの平均を計算
-            folder_embeddings = {}
+            # 各リーフフォルダの文章埋め込みベクトルと画像埋め込みベクトルの平均を計算
+            folder_sentence_embeddings = {}
+            folder_image_embeddings = {}
             for folder in leaf_folders:
                 folder_id = folder['id']
                 
@@ -592,37 +565,46 @@ def execute_continuous_clustering(
                 clustering_ids = list(folder_data.keys())
                 print(f"  📁 フォルダ {folder['name']} ({folder_id}): {len(clustering_ids)}個の画像を含む")
                 
-                # clustering_idからchromadb_image_idを取得
+                # clustering_idからchromadb_sentence_idとchromadb_image_idを取得
+                sentence_ids = []
                 image_ids = []
                 for cid in clustering_ids:
-                    get_image_id_query = f"""
-                        SELECT chromadb_image_id FROM images
-                        WHERE clustering_id = '{cid}' AND project_id = {project_id};
-                    """
-                    img_result, _ = execute_query(session=connect_session, query_text=get_image_id_query)
+                    sent_result, _ = action_queries.get_chromadb_sentence_id_by_clustering_id(connect_session, cid, project_id)
+                    if sent_result:
+                        sent_mapping = sent_result.mappings().first()
+                        if sent_mapping:
+                            sentence_ids.append(sent_mapping['chromadb_sentence_id'])
+                    
+                    img_result, _ = action_queries.get_chromadb_image_id_by_clustering_id(connect_session, cid, project_id)
                     if img_result:
                         img_mapping = img_result.mappings().first()
                         if img_mapping:
                             image_ids.append(img_mapping['chromadb_image_id'])
-                
-                if len(image_ids) == 0:
-                    continue
+
+                # ChromaDBから文章の埋め込みベクトルを取得
+                if len(sentence_ids) > 0:
+                    try:
+                        sentence_data = sentence_name_db.get_data_by_ids(sentence_ids)
+                        sentence_embeddings = sentence_data['embeddings']
+                        avg_sentence_embedding = np.mean(sentence_embeddings, axis=0)
+                        folder_sentence_embeddings[folder_id] = avg_sentence_embedding
+                        print(f"  ✅ フォルダ {folder['name']} ({folder_id}): {len(sentence_embeddings)}個の文章の平均ベクトル計算完了")
+                    except Exception as e:
+                        print(f"  ⚠️ フォルダ {folder_id} の文章埋め込みベクトル取得エラー: {e}")
                 
                 # ChromaDBから画像の埋め込みベクトルを取得
-                try:
-                    image_data = image_db.get_data_by_ids(image_ids)
-                    embeddings = image_data['embeddings']
-                    
-                    # 平均埋め込みベクトルを計算
-                    avg_embedding = np.mean(embeddings, axis=0)
-                    folder_embeddings[folder_id] = avg_embedding
-                    
-                    print(f"  ✅ フォルダ {folder['name']} ({folder_id}): {len(embeddings)}個の画像の平均ベクトル計算完了")
-                except Exception as e:
-                    print(f"  ⚠️ フォルダ {folder_id} の埋め込みベクトル取得エラー: {e}")
-                    continue
+                if len(image_ids) > 0:
+                    try:
+                        image_data = image_db.get_data_by_ids(image_ids)
+                        image_embeddings = image_data['embeddings']
+                        avg_image_embedding = np.mean(image_embeddings, axis=0)
+                        folder_image_embeddings[folder_id] = avg_image_embedding
+                        print(f"  ✅ フォルダ {folder['name']} ({folder_id}): {len(image_embeddings)}個の画像の平均ベクトル計算完了")
+                    except Exception as e:
+                        print(f"  ⚠️ フォルダ {folder_id} の画像埋め込みベクトル取得エラー: {e}")
             
-            print(f"\n📊 埋め込みベクトルを持つフォルダ数: {len(folder_embeddings)}")
+            print(f"\n📊 文章埋め込みベクトルを持つフォルダ数: {len(folder_sentence_embeddings)}")
+            print(f"📊 画像埋め込みベクトルを持つフォルダ数: {len(folder_image_embeddings)}")
             
             # 各未クラスタリング画像を処理
             for idx, row in enumerate(unclustered_rows, 1):
@@ -630,47 +612,508 @@ def execute_continuous_clustering(
                     image_id = row['image_id']
                     image_name = row['image_name']
                     clustering_id = row['clustering_id']
+                    chromadb_sentence_id = row['chromadb_sentence_id']
                     chromadb_image_id = row['chromadb_image_id']
                     
                     print(f"\n  [{idx}/{len(unclustered_rows)}] 処理中: {image_name} (ID: {image_id})")
                     
+                    # ChromaDBから文章の埋め込みベクトルを取得
+                    new_sentence_embedding = None
+                    try:
+                        new_sentence_data = sentence_name_db.get_data_by_ids([chromadb_sentence_id])
+                        new_sentence_embedding = new_sentence_data['embeddings'][0]
+                    except Exception as e:
+                        print(f"    ⚠️ 文章埋め込みベクトル取得エラー: {e}")
+                    
                     # ChromaDBから画像の埋め込みベクトルを取得
+                    new_image_embedding = None
                     try:
                         new_image_data = image_db.get_data_by_ids([chromadb_image_id])
                         new_image_embedding = new_image_data['embeddings'][0]
                     except Exception as e:
                         print(f"    ⚠️ 画像埋め込みベクトル取得エラー: {e}")
+                    
+                    # 両方のベクトルが取得できなかった場合はスキップ
+                    if new_sentence_embedding is None and new_image_embedding is None:
+                        print(f"    ⚠️ 埋め込みベクトルの取得に失敗しました")
                         continue
                     
-                    # 各フォルダとの類似度を計算
+                    # 各フォルダとの類似度を計算（文章と画像の両方）
                     max_similarity = -1
                     best_folder_id = None
+                    best_similarity_type = None  # 'sentence' or 'image'
                     
-                    for folder_id, folder_embedding in folder_embeddings.items():
-                        similarity = cosine_similarity(
-                            [new_image_embedding],
-                            [folder_embedding]
-                        )[0][0]
-                        
-                        if similarity > max_similarity:
-                            max_similarity = similarity
-                            best_folder_id = folder_id
+                    # 文章ベクトルで類似度計算
+                    if new_sentence_embedding is not None:
+                        for folder_id, folder_embedding in folder_sentence_embeddings.items():
+                            similarity = cosine_similarity(
+                                [new_sentence_embedding],
+                                [folder_embedding]
+                            )[0][0]
+                            
+                            if similarity > max_similarity:
+                                max_similarity = similarity
+                                best_folder_id = folder_id
+                                best_similarity_type = 'sentence'
+                    
+                    # 画像ベクトルで類似度計算
+                    if new_image_embedding is not None:
+                        for folder_id, folder_embedding in folder_image_embeddings.items():
+                            similarity = cosine_similarity(
+                                [new_image_embedding],
+                                [folder_embedding]
+                            )[0][0]
+                            
+                            if similarity > max_similarity:
+                                max_similarity = similarity
+                                best_folder_id = folder_id
+                                best_similarity_type = 'image'
                     
                     if best_folder_id is None:
                         print(f"    ⚠️ 適切なフォルダが見つかりませんでした")
                         continue
+                    
+                    print(f"    📊 最高類似度: {max_similarity:.4f} (タイプ: {best_similarity_type})")
+                    
+                    # 類似度閾値チェック：閾値を下回る場合は新しいフォルダを作成
+                    SIMILARITY_THRESHOLD = 0.4  # 類似度閾値（調整可能）
+                    
+                    if max_similarity < SIMILARITY_THRESHOLD:
+                        print(f"    ⚠️ 最高類似度 {max_similarity:.4f} が閾値 {SIMILARITY_THRESHOLD} を下回っています")
+                        print(f"    🆕 新しいリーフフォルダを作成します...")
+                        
+                        # キャプションから新フォルダ名を生成
+                        try:
+                            caption_res, _ = images_queries.select_caption_by_clustering_id(connect_session, clustering_id)
+                            if caption_res:
+                                caption_row = caption_res.mappings().first()
+                                if caption_row and 'caption' in caption_row and caption_row['caption']:
+                                    caption = caption_row['caption']
+                                    # キャプションから特徴的な単語を抽出してフォルダ名を生成
+                                    # 最初の文節（.の前）から単語を抽出
+                                    first_sentence = caption.split('.')[0] if '.' in caption else caption
+                                    # 2-3個の特徴的な単語を抽出（ストップワード除外）
+
+                                    words = WordAnalyzer.extract_words(first_sentence)
+                                    # 最大3単語でフォルダ名を作成
+                                    new_folder_name = ','.join(words[:3]) if len(words) > 0 else f"new_category_{idx}"
+                                else:
+                                    new_folder_name = f"new_category_{idx}"
+                            else:
+                                new_folder_name = f"new_category_{idx}"
+                        except Exception as name_e:
+                            print(f"    ⚠️ フォルダ名生成エラー: {name_e}")
+                            new_folder_name = f"new_category_{idx}"
+                        
+                        # imagesテーブルからimage_pathを取得
+                        path_result, _ = action_queries.get_image_name_by_id(connect_session, image_id)
+                        image_path = path_result.mappings().first()['name']
+                        
+                        # トップレベル（parent_id=None）に新しいリーフフォルダを作成
+                        create_result = result_manager.create_new_leaf_folder(
+                            folder_name=new_folder_name,
+                            parent_id=None,  # トップレベルに作成
+                            initial_clustering_id=clustering_id,
+                            initial_image_path=image_path
+                        )
+                        
+                        if create_result['success']:
+                            new_folder_id = create_result['folder_id']
+                            print(f"    ✅ 新しいフォルダを作成しました: {new_folder_name} (ID: {new_folder_id})")
+                            
+                            # user_image_clustering_statesを更新
+                            _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)
+                            
+                            # 新しいフォルダの埋め込みベクトルを追加（両方）
+                            if new_sentence_embedding is not None:
+                                folder_sentence_embeddings[new_folder_id] = new_sentence_embedding
+                            if new_image_embedding is not None:
+                                folder_image_embeddings[new_folder_id] = new_image_embedding
+                            
+                            # leaf_foldersリストにも追加
+                            leaf_folders.append({
+                                'id': new_folder_id,
+                                'name': new_folder_name,
+                                'parent_id': None,
+                                'is_leaf': True
+                            })
+                            
+                            print(f"    ℹ️ 類似度が低いため、後続のフォルダ特徴分析はスキップします")
+                            continue  # 後続の処理をスキップ
+                        else:
+                            print(f"    ❌ フォルダ作成エラー: {create_result.get('error', 'Unknown error')}")
+                            print(f"    → 既存のフォルダに配置を試みます")
+                            # エラーの場合は既存フォルダへの配置処理に進む
                     
                     best_folder = next((f for f in leaf_folders if f['id'] == best_folder_id), None)
                     folder_name = best_folder['name'] if best_folder else best_folder_id
                     
                     print(f"    🎯 最も類似したフォルダ: {folder_name} (類似度: {max_similarity:.4f})")
                     
-                    # 画像をフォルダに挿入
+                    # --- 指定したフォルダと同じ階層にあるフォルダを取得 ---
+                    try:
+                        # all_nodesから指定フォルダ（best_folder）の情報を取得
+                        all_nodes = result_manager.get_all_nodes()
+                        best_node = all_nodes.get(best_folder_id) if all_nodes else None
+                        
+                        if best_node:
+                            parent_id_of_best = best_node.get('parent_id')
+                            print(f"    📍 指定フォルダのparent_id: {parent_id_of_best}")
+                            
+                            # 同じparent_idを持つフォルダを取得
+                            sibling_folders = []
+                            for node_id, node_data in all_nodes.items():
+                                if node_data.get('parent_id') == parent_id_of_best:
+                                    sibling_folders.append({
+                                        'id': node_id,
+                                        'name': node_data.get('name'),
+                                        'parent_id': node_data.get('parent_id'),
+                                        'is_leaf': node_data.get('is_leaf', False)
+                                    })
+                            
+                            print(f"    📂 同じ階層のフォルダ一覧 (count={len(sibling_folders)}):")
+                            for sib in sibling_folders:
+                                print(f"       - ID: {sib['id']}, Name: {sib['name']}, is_leaf: {sib['is_leaf']}")
+                            
+                            # --- is_leafフォルダのキャプション一覧を取得 ---
+                            sibling_leaf_folders = [f for f in sibling_folders if f['is_leaf']]
+                            print(f"\n    📝 is_leafフォルダのキャプション収集開始 ({len(sibling_leaf_folders)}個のフォルダ)")
+                            
+                            all_captions = []  # 全キャプションを格納
+                            folder_captions_map = {}  # フォルダごとのキャプション
+                            
+                            for sib_folder in sibling_leaf_folders:
+                                sib_folder_id = sib_folder['id']
+                                sib_folder_name = sib_folder['name']
+                                
+                                # フォルダ内のclustering_idを取得
+                                folder_data_result = result_manager.get_folder_data_from_result(sib_folder_id)
+                                
+                                if folder_data_result['success']:
+                                    folder_data = folder_data_result['data']
+                                    clustering_ids = list(folder_data.keys())
+                                    
+                                    folder_captions = []
+                                    for cid in clustering_ids:
+                                        try:
+                                            caption_res, _ = images_queries.select_caption_by_clustering_id(connect_session, cid)
+                                            if caption_res:
+                                                caption_row = caption_res.mappings().first()
+                                                if caption_row and 'caption' in caption_row and caption_row['caption']:
+                                                    caption = caption_row['caption']
+                                                    folder_captions.append(caption)
+                                                    all_captions.append(caption)
+                                        except Exception as cap_e:
+                                            print(f"       ⚠️ キャプション取得エラー (clustering_id: {cid}): {cap_e}")
+                                    
+                                    folder_captions_map[sib_folder_id] = {
+                                        'folder_name': sib_folder_name,
+                                        'caption_count': len(folder_captions),
+                                        'captions': folder_captions
+                                    }
+                            
+                            print(f"    ✅ 収集完了: 全{len(all_captions)}個のキャプション")
+                            
+                            # --- 頻出単語リストの作成 ---
+                            print(f"\n    📊 頻出単語分析開始...")
+                            
+                            from collections import Counter
+                            import re
+                            
+                            # 全キャプションから単語を抽出
+                            all_words = []
+                            for caption in all_captions:
+                                # 小文字化して単語に分割
+                                words = re.findall(r'\b[a-z]+\b', caption.lower())
+                                all_words.extend(words)
+                            
+                            # ストップワードを除外
+                            stopwords_set = set(CAPTION_STOPWORDS)
+                            filtered_words = [word for word in all_words if word not in stopwords_set]
+                            
+                            # 単語の出現回数をカウント
+                            word_counter = Counter(filtered_words)
+                            
+                            # 頻出順にソート（重複なし）
+                            frequent_words = word_counter.most_common()
+                            
+                            # --- 各フォルダの固有単語分析 ---
+                            print(f"\n    🔍 各フォルダの特徴的な単語を抽出中...")
+                            
+                            # 各フォルダの単語カウンターを作成（文の位置によるバイアス付き）
+                            folder_word_counters = {}
+                            for sib_folder_id, folder_info in folder_captions_map.items():
+                                folder_words = []
+                                for caption in folder_info['captions']:
+                                    # キャプションを文に分割（.で区切る）
+                                    sentences = caption.split('.')
+                                    
+                                    for sentence_idx, sentence in enumerate(sentences):
+                                        if not sentence.strip():  # 空の文はスキップ
+                                            continue
+                                        
+                                        # 文の位置による重み（1文目: 1.0, 2文目: 0.85, 3文目: 0.7, それ以降: 0.6）
+                                        # 極端にならないように調整
+                                        if sentence_idx == 0:
+                                            position_weight = 1.0
+                                        elif sentence_idx == 1:
+                                            position_weight = 0.85
+                                        elif sentence_idx == 2:
+                                            position_weight = 0.7
+                                        else:
+                                            position_weight = 0.6
+                                        
+                                        words = re.findall(r'\b[a-z]+\b', sentence.lower())
+                                        filtered_sentence_words = [w for w in words if w not in stopwords_set]
+                                        
+                                        # 重み付きで単語をカウント（重みに応じて複数回追加）
+                                        for word in filtered_sentence_words:
+                                            # 重みを考慮するため、fractional countとして扱う
+                                            # Counterは整数しか扱えないので、後でスコア計算時に適用
+                                            folder_words.append((word, position_weight))
+                                
+                                # 重み付きカウンターを作成
+                                weighted_counter = {}
+                                for word, weight in folder_words:
+                                    weighted_counter[word] = weighted_counter.get(word, 0.0) + weight
+                                
+                                folder_word_counters[sib_folder_id] = weighted_counter
+                            
+                            # 各フォルダの特徴的な単語を抽出（TF-IDF風のスコアリング）
+                            folder_unique_words = {}
+                            TOP_N_UNIQUE_WORDS = 10  # 各フォルダから上位N個の特徴的な単語を抽出
+                            
+                            for target_folder_id, target_counter in folder_word_counters.items():
+                                # 各単語のスコアを計算（重み付きカウント対応）
+                                word_scores = {}
+                                
+                                for word, count_in_target in target_counter.items():
+                                    # このフォルダでの重み付き出現回数
+                                    tf = count_in_target
+                                    
+                                    # 他のフォルダでの重み付き出現回数の合計
+                                    count_in_others = sum(
+                                        other_counter.get(word, 0.0) 
+                                        for other_id, other_counter in folder_word_counters.items() 
+                                        if other_id != target_folder_id
+                                    )
+                                    
+                                    # スコア計算: (このフォルダでの重み付き出現回数) / (他のフォルダでの重み付き出現回数 + 1)
+                                    # +1は0除算を防ぐため
+                                    idf_like_score = tf / (count_in_others + 1.0)
+                                    
+                                    # 最終スコア: 重み付き出現回数 × IDF風スコア
+                                    final_score = tf * idf_like_score
+                                    
+                                    word_scores[word] = {
+                                        'score': final_score,
+                                        'count_in_folder': tf,
+                                        'count_in_others': count_in_others,
+                                        'ratio': idf_like_score
+                                    }
+                                
+                                # スコア順にソート
+                                sorted_words = sorted(
+                                    word_scores.items(), 
+                                    key=lambda x: x[1]['score'], 
+                                    reverse=True
+                                )
+                                
+                                # 上位N個を取得
+                                top_unique = sorted_words[:TOP_N_UNIQUE_WORDS]
+                                
+                                folder_unique_words[target_folder_id] = {
+                                    'folder_name': folder_captions_map[target_folder_id]['folder_name'],
+                                    'unique_words': [
+                                        {
+                                            'word': word,
+                                            'score': round(info['score'], 2),
+                                            'count_in_folder': info['count_in_folder'],
+                                            'count_in_others': info['count_in_others'],
+                                            'ratio': round(info['ratio'], 2)
+                                        }
+                                        for word, info in top_unique
+                                    ]
+                                }
+                            
+                            # --- フォルダ間の共通カテゴリ分析 ---
+                            print(f"\n    🔍 フォルダ間の共通カテゴリ分析を開始...")
+                            
+                            # 各フォルダから上位10個の特徴的単語を取得
+                            folder_top_words_list = {}
+                            for folder_id, unique_info in folder_unique_words.items():
+                                top_10_words = [w['word'] for w in unique_info['unique_words'][:10]]
+                                folder_top_words_list[folder_id] = top_10_words
+                            
+                            # 全フォルダに共通する単語を特定
+                            if len(folder_top_words_list) > 0:
+                                # 各フォルダの単語セットを作成
+                                folder_word_sets = [set(words) for words in folder_top_words_list.values()]
+                                # 全フォルダに共通する単語を取得
+                                common_to_all_folders = set.intersection(*folder_word_sets) if len(folder_word_sets) > 1 else set()
+                                
+                                print(f"\n    🔍 全フォルダに共通する単語を除外...")
+                                print(f"       - 全フォルダ数: {len(folder_word_sets)}")
+                                print(f"       - 全フォルダに共通する単語数: {len(common_to_all_folders)}")
+                                
+                                if len(common_to_all_folders) > 0:
+                                    common_words_display = ', '.join(sorted(list(common_to_all_folders)))
+                                    print(f"       - 共通単語: {common_words_display}")
+                                    
+                                    # 各フォルダのトップ10単語から共通単語を除外
+                                    for folder_id in folder_top_words_list.keys():
+                                        original_count = len(folder_top_words_list[folder_id])
+                                        folder_top_words_list[folder_id] = [
+                                            w for w in folder_top_words_list[folder_id] 
+                                            if w not in common_to_all_folders
+                                        ]
+                                        removed_count = original_count - len(folder_top_words_list[folder_id])
+                                        if removed_count > 0:
+                                            folder_name = folder_unique_words[folder_id]['folder_name']
+                                            print(f"       - 📁 {folder_name}: {removed_count}個の共通単語を除外")
+                                else:
+                                    print(f"       ℹ️ 全フォルダに共通する単語はありません")
+                            
+                            # WordAnalyzerを初期化（既存のWordNetメソッドを使用）
+                            from sentence_transformers import SentenceTransformer
+                            embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                            word_analyzer = WordAnalyzer(embedding_model)
+                            
+                            # フォルダ間で共通カテゴリを持つ単語ペアを検出
+                            common_category_pairs = []
+                            
+                            # 全フォルダペアを比較（2つ以上のフォルダに対応）
+                            folder_ids_list = list(folder_unique_words.keys())
+                            
+                            for i, folder1_id in enumerate(folder_ids_list):
+                                for j, folder2_id in enumerate(folder_ids_list):
+                                    if i >= j:  # 同じフォルダや重複を避ける
+                                        continue
+                                    
+                                    folder1_name = folder_unique_words[folder1_id]['folder_name']
+                                    folder2_name = folder_unique_words[folder2_id]['folder_name']
+                                    
+                                    print(f"\n    🔄 比較中: {folder1_name} ↔ {folder2_name}")
+                                    
+                                    # 各フォルダのトップ10単語を比較（共通単語除外済み）
+                                    for word1 in folder_top_words_list[folder1_id]:
+                                        for word2 in folder_top_words_list[folder2_id]:
+                                            # WordNetを使って共通カテゴリを取得
+                                            common_categories, category_score = word_analyzer.get_common_category(word1, word2)
+                                            
+                                            if len(common_categories) > 0 and category_score >= 0:
+                                                # 共通カテゴリが見つかった
+                                                pair_info = {
+                                                    'folder1_id': folder1_id,
+                                                    'folder1_name': folder1_name,
+                                                    'word1': word1,
+                                                    'folder2_id': folder2_id,
+                                                    'folder2_name': folder2_name,
+                                                    'word2': word2,
+                                                    'common_categories': common_categories,
+                                                    'category_score': category_score
+                                                }
+                                                common_category_pairs.append(pair_info)
+                                                
+                                                category_display = ', '.join(common_categories[:3])
+                                                print(f"       ✅ '{word1}' ↔ '{word2}'")
+                                                print(f"          共通カテゴリ: {category_display} (スコア: {category_score:.2f})")
+                            
+                            # 結果サマリー
+                            print(f"\n    📊 共通カテゴリ分析結果:")
+                            print(f"       - 比較したフォルダペア数: {len(folder_ids_list) * (len(folder_ids_list) - 1) // 2}")
+                            print(f"       - 共通カテゴリを持つ単語ペア数: {len(common_category_pairs)}")
+                            
+                            if len(common_category_pairs) > 0:
+                                # カテゴリスコアでソート
+                                sorted_pairs = sorted(common_category_pairs, key=lambda x: x['category_score'], reverse=True)
+                                
+                                print(f"\n    🎯 共通カテゴリを持つ単語ペア（スコア順トップ20）:")
+                                for idx, pair in enumerate(sorted_pairs[:20], 1):
+                                    category_display = ', '.join(pair['common_categories'][:2])
+                                    print(f"       {idx:2d}. {pair['folder1_name']} '{pair['word1']}' ↔ {pair['folder2_name']} '{pair['word2']}'")
+                                    print(f"           共通カテゴリ: {category_display} (スコア: {pair['category_score']:.2f})")
+                            else:
+                                print(f"       ⚠️ 共通カテゴリを持つ単語ペアが見つかりませんでした")
+                            
+                            # デバッグ用JSON出力データを作成
+                            debug_output = {
+                                'summary': {
+                                    'total_captions': len(all_captions),
+                                    'total_words_before_filtering': len(all_words),
+                                    'total_words_after_filtering': len(filtered_words),
+                                    'unique_words': len(word_counter),
+                                    'sibling_leaf_folder_count': len(sibling_leaf_folders),
+                                    'common_to_all_folders_count': len(common_to_all_folders) if 'common_to_all_folders' in locals() else 0,
+                                    'common_category_pairs_count': len(common_category_pairs)
+                                },
+                                'common_to_all_folders': sorted(list(common_to_all_folders)) if 'common_to_all_folders' in locals() else [],
+                                'folder_captions': folder_captions_map,
+                                'frequent_words': [
+                                    {
+                                        'word': word,
+                                        'count': count,
+                                        'rank': idx + 1
+                                    }
+                                    for idx, (word, count) in enumerate(frequent_words)
+                                ],
+                                'top_20_words': [
+                                    {
+                                        'word': word,
+                                        'count': count
+                                    }
+                                    for word, count in frequent_words[:20]
+                                ],
+                                'folder_unique_words': folder_unique_words,
+                                'common_category_pairs': common_category_pairs
+                            }
+                            
+                            # JSON形式で出力
+                            import json
+                            from datetime import datetime
+                            
+                            # JSONファイルに保存
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            json_filename = f"sibling_captions_analysis_{timestamp}.json"
+                            json_filepath = os.path.join("./", json_filename)
+                            
+                            try:
+                                with open(json_filepath, 'w', encoding='utf-8') as f:
+                                    json.dump(debug_output, f, indent=2, ensure_ascii=False)
+                                print(f"\n    💾 JSONファイルに保存しました: {json_filepath}")
+                            except Exception as json_e:
+                                print(f"    ⚠️ JSONファイル保存エラー: {json_e}")
+                            
+                            # コンソールにも出力（簡易版）
+                            print(f"\n    📋 デバッグ用JSON出力サマリー:")
+                            print(f"       - 総キャプション数: {debug_output['summary']['total_captions']}")
+                            print(f"       - ユニークな単語数: {debug_output['summary']['unique_words']}")
+                            print(f"       - フォルダ数: {debug_output['summary']['sibling_leaf_folder_count']}")
+                            
+                            print(f"\n    🔝 Top 20 頻出単語:")
+                            for idx, (word, count) in enumerate(frequent_words[:20], 1):
+                                print(f"       {idx:2d}. {word:20s} : {count:4d}回")
+                            
+                            print(f"\n    🎯 各フォルダの特徴的な単語 (Top {TOP_N_UNIQUE_WORDS}):")
+                            for folder_id, unique_info in folder_unique_words.items():
+                                folder_name = unique_info['folder_name']
+                                print(f"\n       📁 {folder_name} (ID: {folder_id}):")
+                                for rank, word_info in enumerate(unique_info['unique_words'], 1):
+                                    print(f"          {rank:2d}. {word_info['word']:20s} | "
+                                          f"スコア: {word_info['score']:6.2f} | "
+                                          f"このフォルダ: {word_info['count_in_folder']:6.2f}回 | "
+                                          f"他フォルダ: {word_info['count_in_others']:6.2f}回 | "
+                                          f"比率: {word_info['ratio']:5.2f}")
+                            
+                        else:
+                            print(f"    ⚠️ 指定フォルダ {best_folder_id} がall_nodesに見つかりません")
+                    except Exception as sib_e:
+                        print(f"    ⚠️ 同階層フォルダ取得エラー: {sib_e}")
+                        traceback.print_exc()
+                    
+                    # 画像をフォルダに挿入（平均ベクトル類似度ベース）
                     # imagesテーブルからimage_pathを取得
-                    get_path_query = f"""
-                        SELECT name FROM images WHERE id = {image_id};
-                    """
-                    path_result, _ = execute_query(session=connect_session, query_text=get_path_query)
+                    path_result, _ = action_queries.get_image_name_by_id(connect_session, image_id)
                     image_path = path_result.mappings().first()['name']
                     
                     insert_result = result_manager.insert_image_to_leaf_folder(
@@ -678,20 +1121,13 @@ def execute_continuous_clustering(
                         image_path=image_path,
                         target_folder_id=best_folder_id
                     )
-                    
+
                     if insert_result['success']:
                         print(f"    ✅ フォルダに画像を挿入しました")
-                        
+
                         # user_image_clustering_statesを更新
-                        update_state_query = f"""
-                            UPDATE user_image_clustering_states
-                            SET is_clustered = 1, 
-                                executed_clustering_count = {new_count}, 
-                                clustered_at = CURRENT_TIMESTAMP(6)
-                            WHERE user_id = {user_id} AND image_id = {image_id};
-                        """
-                        _, _ = execute_query(session=connect_session, query_text=update_state_query)
-                        
+                        _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)
+
                         # フォルダの埋め込みベクトルを再計算（新しい画像を追加したため）
                         print(f"    🔄 フォルダ埋め込みベクトルを再計算中...")
                         try:
@@ -700,31 +1136,40 @@ def execute_continuous_clustering(
                             if folder_data_result['success']:
                                 folder_data = folder_data_result['data']
                                 clustering_ids = list(folder_data.keys())
+
+                                # 文章埋め込みベクトルの再計算
+                                sentence_ids = []
+                                for cid in clustering_ids:
+                                    sent_result, _ = action_queries.get_chromadb_sentence_id_by_clustering_id(connect_session, cid, project_id)
+                                    if sent_result:
+                                        sent_mapping = sent_result.mappings().first()
+                                        if sent_mapping:
+                                            sentence_ids.append(sent_mapping['chromadb_sentence_id'])
+
+                                if len(sentence_ids) > 0:
+                                    updated_sentence_data = sentence_name_db.get_data_by_ids(sentence_ids)
+                                    updated_sentence_embeddings = updated_sentence_data['embeddings']
+                                    folder_sentence_embeddings[best_folder_id] = np.mean(updated_sentence_embeddings, axis=0)
+                                    print(f"    ✅ フォルダ文章埋め込みベクトル再計算完了 ({len(sentence_ids)}個の文章)")
                                 
+                                # 画像埋め込みベクトルの再計算
                                 image_ids = []
                                 for cid in clustering_ids:
-                                    get_image_id_query = f"""
-                                        SELECT chromadb_image_id FROM images
-                                        WHERE clustering_id = '{cid}' AND project_id = {project_id};
-                                    """
-                                    img_result, _ = execute_query(session=connect_session, query_text=get_image_id_query)
+                                    img_result, _ = action_queries.get_chromadb_image_id_by_clustering_id(connect_session, cid, project_id)
                                     if img_result:
                                         img_mapping = img_result.mappings().first()
                                         if img_mapping:
                                             image_ids.append(img_mapping['chromadb_image_id'])
-                                
+
                                 if len(image_ids) > 0:
                                     updated_image_data = image_db.get_data_by_ids(image_ids)
-                                    updated_embeddings = updated_image_data['embeddings']
-                                    folder_embeddings[best_folder_id] = np.mean(updated_embeddings, axis=0)
-                                    print(f"    ✅ フォルダ埋め込みベクトル再計算完了 ({len(image_ids)}個の画像)")
-                                else:
-                                    print(f"    ⚠️ フォルダに画像IDが見つかりません")
+                                    updated_image_embeddings = updated_image_data['embeddings']
+                                    folder_image_embeddings[best_folder_id] = np.mean(updated_image_embeddings, axis=0)
+                                    print(f"    ✅ フォルダ画像埋め込みベクトル再計算完了 ({len(image_ids)}個の画像)")
                             else:
                                 print(f"    ⚠️ フォルダデータの再取得失敗: {folder_data_result.get('error', 'Unknown error')}")
                         except Exception as e:
                             print(f"    ⚠️ フォルダ埋め込みベクトル再計算エラー: {e}")
-                            import traceback
                             traceback.print_exc()
                     else:
                         print(f"    ❌ 画像挿入エラー: {insert_result.get('error', 'Unknown error')}")
@@ -734,24 +1179,10 @@ def execute_continuous_clustering(
                     continue
             
             # project_membershipsのexecuted_clustering_countを更新
-            update_count_query = f"""
-                UPDATE project_memberships
-                SET executed_clustering_count = {new_count}
-                WHERE user_id = {user_id} AND project_id = {project_id};
-            """
-            _, _ = execute_query(session=connect_session, query_text=update_count_query)
+            _, _ = action_queries.update_project_executed_clustering_count(connect_session, user_id, project_id, new_count)
             
             # 未クラスタリング画像が残っているか確認
-            check_unclustered_query = f"""
-                SELECT COUNT(*) as unclustered_count
-                FROM images i
-                LEFT JOIN user_image_clustering_states uics 
-                    ON i.id = uics.image_id AND uics.user_id = {user_id}
-                WHERE i.project_id = {project_id} 
-                    AND i.is_created_caption = TRUE
-                    AND (uics.is_clustered = 0 OR uics.is_clustered IS NULL);
-            """
-            check_result, _ = execute_query(session=connect_session, query_text=check_unclustered_query)
+            check_result, _ = action_queries.get_unclustered_count_for_project(connect_session, user_id, project_id)
             remaining_unclustered = check_result.mappings().first()['unclustered_count']
             
             print(f"\n📊 クラスタリング完了後の状態確認:")
@@ -761,12 +1192,7 @@ def execute_continuous_clustering(
             new_state = 2 if remaining_unclustered > 0 else 0
             state_description = "実行可能" if new_state == 2 else "実行不可能"
             
-            update_state_query = f"""
-                UPDATE project_memberships
-                SET continuous_clustering_state = {new_state}
-                WHERE user_id = {user_id} AND project_id = {project_id};
-            """
-            _, _ = execute_query(session=connect_session, query_text=update_state_query)
+            _, _ = action_queries.update_continuous_state(connect_session, user_id, project_id, new_state)
             
             print(f"   continuous_clustering_state: {new_state} ({state_description})")
             print(f"\n✅ 継続的クラスタリング バックグラウンド処理完了")
@@ -775,43 +1201,23 @@ def execute_continuous_clustering(
             
         except Exception as e:
             print(f"❌ 継続的クラスタリング処理中にエラー: {str(e)}")
-            import traceback
             traceback.print_exc()
             
             # エラー時も未クラスタリング画像の有無を確認して状態を設定
             try:
-                check_unclustered_query = f"""
-                    SELECT COUNT(*) as unclustered_count
-                    FROM images i
-                    LEFT JOIN user_image_clustering_states uics 
-                        ON i.id = uics.image_id AND uics.user_id = {user_id}
-                    WHERE i.project_id = {project_id} 
-                        AND i.is_created_caption = TRUE
-                        AND (uics.is_clustered = 0 OR uics.is_clustered IS NULL);
-                """
-                check_result, _ = execute_query(session=connect_session, query_text=check_unclustered_query)
+                check_result, _ = action_queries.get_unclustered_count_for_project(connect_session, user_id, project_id)
                 remaining_unclustered = check_result.mappings().first()['unclustered_count']
                 
                 # 未クラスタリング画像が残っていれば2（実行可能）、なければ0（実行不可能）
                 new_state = 2 if remaining_unclustered > 0 else 0
                 
-                update_state_query = f"""
-                    UPDATE project_memberships
-                    SET continuous_clustering_state = {new_state}
-                    WHERE user_id = {user_id} AND project_id = {project_id};
-                """
-                _, _ = execute_query(session=connect_session, query_text=update_state_query)
+                _, _ = action_queries.update_continuous_state(connect_session, user_id, project_id, new_state)
                 print(f"⚠️ エラー後の状態更新: continuous_clustering_state = {new_state} (未クラスタリング画像: {remaining_unclustered})")
             except Exception as state_error:
                 print(f"⚠️ エラー後の状態更新に失敗: {state_error}")
                 
     # continuous_clustering_stateを1（実行中）に更新
-    update_query = f"""
-        UPDATE project_memberships
-        SET continuous_clustering_state = 1
-        WHERE project_id = {project_id} AND user_id = {user_id};
-    """
-    _, _ = execute_query(session=connect_session, query_text=update_query)
+    _, _ = action_queries.update_continuous_state(connect_session, user_id, project_id, 1)
     
     # 非同期実行
     background_tasks.add_task(run_continuous_clustering, rows, project_id, user_id, mongo_result_id)
@@ -1058,6 +1464,58 @@ async def get_node_info(mongo_result_id: str, node_id: str):
         )
 
 
+@action_endpoint.get("/action/clustering/captions/{mongo_result_id}", tags=["action"], description="指定フォルダ内のクラスタリングIDに対応するキャプションを取得する")
+async def get_captions_for_folder(mongo_result_id: str, folder_id: str = Query(..., description="フォルダの node_id")):
+    """
+    mongo_result_id (パス) と folder_id (クエリ) を受け取り、そのフォルダに含まれる画像の clustering_id を取得し、
+    images テーブルから caption を取得して {clustering_id: caption} のマップを返す。
+    """
+    try:
+        if not mongo_result_id or not mongo_result_id.strip():
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "mongo_result_id is required"})
+
+        if not folder_id or not folder_id.strip():
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"message": "folder_id is required"})
+
+        # ResultManagerを初期化してフォルダ内のclustering_id一覧を取得
+        result_manager = ResultManager(mongo_result_id)
+        clustering_ids_result = result_manager.get_leaf_folder_image_clustering_ids(folder_id)
+
+        # debug logs for tracing
+        print(f"🔍 get_captions_for_folder: clustering_ids_result={clustering_ids_result}")
+
+        if not clustering_ids_result.get('success', False):
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": clustering_ids_result.get('error', 'folder not found'), "data": None})
+
+        clustering_ids = clustering_ids_result.get('data', [])
+        print(f"🔍 get_captions_for_folder: clustering_ids (count={len(clustering_ids)}): {clustering_ids[:50]}")
+
+        captions_map = {}
+
+        # DBセッションを作成して1つずつcaptionを取得（将来的にINクエリへ最適化可）
+        connect_session = create_connect_session()
+        if connect_session is None:
+            return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database"})
+
+        for cid in clustering_ids:
+            try:
+                res, _ = images_queries.select_caption_by_clustering_id(connect_session, cid)
+                if res is None:
+                    captions_map[cid] = None
+                    continue
+                mapping = res.mappings().first()
+                captions_map[cid] = mapping['caption'] if mapping and 'caption' in mapping else None
+            except Exception as q_e:
+                # 個別取得に失敗しても他の結果は返す
+                captions_map[cid] = None
+
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"message": "success", "data": {"folder_id": folder_id, "captions": captions_map}})
+
+    except Exception as e:
+        print(f"❌ get_captions_for_folderエラー: {e}")
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": f"Internal server error: {str(e)}"})
+
+
 @action_endpoint.put("/action/folders/{mongo_result_id}/{node_id}", tags=["action"], description="フォルダまたはファイルの名前を変更")
 async def rename_folder_or_file(
     mongo_result_id: str,
@@ -1159,5 +1617,249 @@ async def rename_folder_or_file(
                     "attempted_name": name,
                     "error": str(e)
                 }
+            }
+        )
+
+
+@action_endpoint.get("/action/clustering/download/{project_id}", tags=["action"], description="分類結果をダウンロードする")
+async def download_classification_result(
+    project_id: int,
+    user_id: int = Query(..., description="ユーザーID")
+):
+    """
+    分類結果をZIPファイルとしてダウンロードする
+    
+    ZIPファイルの内容:
+    - result.json: 分類結果の階層構造
+    - all_nodes.json: 全ノードの情報
+    - images/: 分類結果に基づいたフォルダ構造の画像ファイル
+    
+    Args:
+        project_id: プロジェクトID
+        user_id: ユーザーID
+        
+    Returns:
+        FileResponse: ZIPファイル
+    """
+    connect_session = create_connect_session()
+    
+    if connect_session is None:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": "failed to connect to database", "data": None}
+        )
+    
+    try:
+        # プロジェクト情報とmongo_result_idを取得
+        query_text = f"""
+            SELECT 
+                p.name as project_name,
+                p.original_images_folder_path,
+                pm.mongo_result_id,
+                pm.init_clustering_state
+            FROM projects p
+            JOIN project_memberships pm ON p.id = pm.project_id
+            WHERE p.id = {project_id} AND pm.user_id = {user_id};
+        """
+        
+        result, _ = action_queries.get_project_info_and_mongo(connect_session, project_id, user_id)
+        result_mapping = result.mappings().first()
+        
+        if result_mapping is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "project or membership not found", "data": None}
+            )
+        
+        project_name = result_mapping['project_name']
+        original_images_folder_path = result_mapping['original_images_folder_path']
+        mongo_result_id = result_mapping['mongo_result_id']
+        init_clustering_state = result_mapping['init_clustering_state']
+        
+        # 初期クラスタリングが完了していない場合はエラー
+        if init_clustering_state != INIT_CLUSTERING_STATUS.FINISHED:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "clustering not completed yet", "data": None}
+            )
+        
+        print(f"📦 ダウンロード処理開始:")
+        print(f"   プロジェクト: {project_name}")
+        print(f"   ユーザーID: {user_id}")
+        print(f"   mongo_result_id: {mongo_result_id}")
+        
+        # ResultManagerから分類結果データを取得
+        result_manager = ResultManager(mongo_result_id)
+        export_data = result_manager.export_classification_data()
+        
+        if not export_data['success']:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": f"failed to export classification data: {export_data.get('error', 'Unknown error')}",
+                    "data": None
+                }
+            )
+        
+        result_dict = export_data['result']
+        all_nodes_dict = export_data['all_nodes']
+        
+        # 画像フォルダのパス
+        source_images_path = Path(f"./{DEFAULT_IMAGE_PATH}/{original_images_folder_path}")
+        
+        if not source_images_path.exists():
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": f"source images folder not found: {source_images_path}",
+                    "data": None
+                }
+            )
+        
+        print(f"   画像フォルダ: {source_images_path}")
+        
+        # ダウンロードパッケージを作成
+        try:
+            zip_path = Utils.create_classification_download_package(
+                result_dict=result_dict,
+                all_nodes_dict=all_nodes_dict,
+                source_images_path=source_images_path,
+                project_name=project_name
+            )
+            
+            print(f"   ZIPファイル作成完了: {zip_path}")
+            
+            # ZIPファイルをダウンロード
+            return FileResponse(
+                path=str(zip_path),
+                media_type='application/zip',
+                filename=f"{project_name}.zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{project_name}.zip"'
+                }
+            )
+            
+        except Exception as create_error:
+            print(f"❌ ZIPファイル作成エラー: {create_error}")
+            traceback.print_exc()
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "message": f"failed to create download package: {str(create_error)}",
+                    "data": None
+                }
+            )
+        
+    except Exception as e:
+        print(f"❌ download_classification_result処理中にエラー: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "message": f"Internal server error: {str(e)}",
+                "data": None
+            }
+        )
+
+
+@action_endpoint.get("/action/clustering/counts/{project_id}", tags=["action"], description="プロジェクト内の画像のクラスタリング回数情報を取得する")
+async def get_clustering_counts(
+    project_id: int,
+    user_id: int = Query(..., description="ユーザーID")
+):
+    """
+    プロジェクト内の全画像のクラスタリング回数情報を取得する
+    
+    Returns:
+        {
+            "available_counts": [0, 1, 2, ...],  # 実行された回数のリスト
+            "image_counts": {
+                "clustering_id_1": 0,  # 各画像のクラスタリング回数
+                "clustering_id_2": 1,
+                ...
+            }
+        }
+    """
+    connect_session = create_connect_session()
+    
+    if connect_session is None:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"message": "failed to connect to database", "data": None}
+        )
+    
+    try:
+        # プロジェクトメンバーシップを確認（COUNTで存在確認する。
+        # 一部環境で project_memberships に id カラムが無い可能性があるため、単純な存在確認を使う）
+        membership_result, _ = action_queries.membership_exists(connect_session, project_id, user_id)
+
+        # execute_query が失敗して None を返す場合を安全に扱う
+        if membership_result is None:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"message": "failed to query project_memberships", "data": None}
+            )
+
+        membership_row = membership_result.mappings().first()
+        if membership_row is None or membership_row.get('cnt', 0) == 0:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "project membership not found", "data": None}
+            )
+        
+        result, _ = action_queries.get_image_counts_for_clustering_counts(connect_session, user_id, project_id)
+        rows = result.mappings().all()
+
+        # executed_clustering_count ごとに clustering_id の配列を作成
+        grouped_by_count: dict[str, list] = {}
+        # clustering_id -> executed_clustering_count の辞書
+        image_counts: dict = {}
+        available_counts_set = set()
+
+        for row in rows:
+            clustering_id = row.get('clustering_id')
+            count = row.get('exec_count')
+
+            # clustering_id または count が無い場合はスキップ
+            if clustering_id is None or count is None:
+                continue
+
+            # image_counts マップ
+            image_counts[clustering_id] = int(count)
+
+            # grouped map: key を文字列にして返す（例: '0', '1', ...）
+            key = str(int(count))
+            if key not in grouped_by_count:
+                grouped_by_count[key] = []
+            # 重複を避けて追加
+            if clustering_id not in grouped_by_count[key]:
+                grouped_by_count[key].append(clustering_id)
+
+            available_counts_set.add(int(count))
+
+        # 利用可能な回数をソートしたリストに変換
+        available_counts = sorted(list(available_counts_set))
+        
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "success",
+                "data": {
+                    "available_counts": available_counts,
+                    "image_counts": image_counts,
+                    "grouped_image_ids": grouped_by_count
+                }
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ get_clustering_counts処理中にエラー: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "message": f"Internal server error: {str(e)}",
+                "data": None
             }
         )

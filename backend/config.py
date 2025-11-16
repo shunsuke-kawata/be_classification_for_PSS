@@ -82,3 +82,18 @@ MAJOR_SHAPES = [
     "shape", "form", "figure", "outline", "contour", "pattern", "structure", "silhouette",
     "geometry", "dimension", "frame", "profile"
 ]
+
+# キャプション生成で固定的に出現する除外単語
+# パターン: "The main object is {color and shape} {object name}. It's used for {usage}. Its category is {category}."
+CAPTION_STOPWORDS = [
+    "the", "main", "object", "is", "it", "its", "It's", "used", "for", "category", 
+    "and", "a", "an", "this", "that", "these", "those", 
+    "in", "on", "at", "to", "of", "with", "by", "from", 
+    "as", "are", "was", "were", "be", "been", "being", 
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", 
+    "can", "may", "might", "must", "shall", 
+    "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", 
+    "r", "s", "t", "u", "v", "w", "x", "y", "z", 
+    "very", "too", "so", "just", "only", "always", "never", "often", "seldom", 
+    "up", "down", "over", "under", "out", "or", "but", "nor", "yet"
+]

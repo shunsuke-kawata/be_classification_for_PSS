@@ -17,12 +17,25 @@ clustering_path = os.path.join(parent_dir, "clustering")
 # from backend.clustering.caption_manager import CaptionManager
 from clustering.caption_manager import CaptionManager
 from db_utils.commons import create_connect_session, execute_query
+from db_utils.images_queries import (
+    get_project_original_images_folder_path,
+    check_image_exists,
+    insert_image,
+    select_image_id_by_clustering_id,
+    select_project_members,
+    update_project_members_continuous_state,
+    get_images_by_project,
+    delete_image,
+    select_caption_by_clustering_id,
+)
+from db_utils.auth_queries import insert_user_image_state
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewImage
 from pathlib import Path
 from config import DEFAULT_IMAGE_PATH ,OPENAI_API_KEY
 from clustering.caption_manager import CaptionManager
 from clustering.chroma_db_manager import ChromaDBManager
+from clustering.mongo_result_manager import ResultManager
 from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from clustering.embeddings_manager.sentence_embeddings_manager import SentenceEmbeddingsManager
 from clustering.utils import Utils
@@ -33,13 +46,26 @@ images_endpoint = APIRouter()
 upload_status_cache = {}
 
 class UploadResult:
-    def __init__(self, filename: str, success: bool, message: str, data: dict = None, error_type: str = None):
+    def __init__(self, filename: str, success: bool, message: str, data: dict = None, error_type: str = None, status_code: int = None):
         self.filename = filename
         self.success = success
         self.message = message
         self.data = data or {}
         self.error_type = error_type
+        self.status_code = status_code or (201 if success else 400)
         self.timestamp = datetime.now().isoformat()
+    
+    def to_dict(self):
+        """UploadResultを辞書形式に変換（フロント向け）"""
+        return {
+            "filename": self.filename,
+            "success": self.success,
+            "message": self.message,
+            "status_code": self.status_code,
+            "error_type": self.error_type,
+            "data": self.data,
+            "timestamp": self.timestamp
+        }
 
 def validate_image_file(file: UploadFile) -> tuple[bool, str]:
     """
@@ -80,37 +106,29 @@ async def process_single_upload(
         # ファイル妥当性チェック
         is_valid, validation_message = validate_image_file(file)
         if not is_valid:
-            return UploadResult(filename, False, validation_message, error_type="ValidationError")
+            return UploadResult(filename, False, validation_message, error_type="ValidationError", status_code=400)
 
         connect_session = create_connect_session()
         if connect_session is None:
-            return UploadResult(filename, False, "データベース接続失敗", error_type="DatabaseConnectionError")
+            return UploadResult(filename, False, "データベース接続失敗", error_type="DatabaseConnectionError", status_code=500)
 
         # プロジェクトのoriginal_images_folder_pathを取得
-        query_text = f"""
-            SELECT original_images_folder_path FROM projects WHERE id = {project_id};
-        """
-        result, _ = execute_query(connect_session, query_text)
+        result, _ = get_project_original_images_folder_path(connect_session, project_id)
         
         if not result or result.rowcount == 0:
-            return UploadResult(filename, False, "プロジェクトが見つかりません", error_type="ProjectNotFoundError")
+            return UploadResult(filename, False, "プロジェクトが見つかりません", error_type="ProjectNotFoundError", status_code=404)
 
         original_images_folder_path = result.mappings().first()["original_images_folder_path"]
         save_dir = Path(DEFAULT_IMAGE_PATH) / original_images_folder_path
         os.makedirs(save_dir, exist_ok=True)
 
-        contents = await file.read()
         filename_without_ext, _ = os.path.splitext(filename)
         png_path = f"{filename_without_ext}.png"
         escaped_png_path = png_path.replace("'", "''")  # SQLインジェクション対策
-
-        # 同名画像が既に存在するか確認（DB + ファイルシステム）
-        check_query = f"""
-            SELECT id FROM images WHERE name = '{escaped_png_path}' AND project_id = {project_id};
-        """
-        result, _ = execute_query(connect_session, check_query)
-        
         save_path = save_dir / png_path
+
+        # 【重要】ファイル保存前に同名画像が既に存在するか確認（DB + ファイルシステム）
+        result, _ = check_image_exists(connect_session, escaped_png_path, project_id)
         file_exists_in_fs = save_path.exists()
         
         if (result and result.rowcount > 0) or file_exists_in_fs:
@@ -120,15 +138,18 @@ async def process_single_upload(
             if file_exists_in_fs:
                 error_detail.append("ファイルシステムに存在")
             
+            # Conflictエラーの場合、ファイル保存やDB挿入を行わずに即座にリターン
             return UploadResult(
                 filename, 
                 False, 
                 f"同名の画像が既に存在します ({', '.join(error_detail)})", 
                 {"conflict_sources": error_detail},
-                error_type="ConflictError"
+                error_type="ConflictError",
+                status_code=409
             )
 
-        # 画像をPNGに変換して保存
+        # Conflictチェック通過後にファイルを読み込み・保存
+        contents = await file.read()
         png_bytes = Utils.image2png(contents)
         with open(save_path, "wb") as f:
             f.write(png_bytes)
@@ -136,7 +157,10 @@ async def process_single_upload(
         # 仮のキャプション生成
         is_created, created_caption = Utils.get_exmaple_caption(png_path)
         if not (is_created):
-            return UploadResult(filename, False, "データベース挿入失敗", error_type="CaptionCreateError")
+            # ファイルを削除してロールバック
+            if save_path.exists():
+                os.remove(save_path)
+            return UploadResult(filename, False, "キャプション生成失敗", error_type="CaptionCreateError", status_code=500)
 
         # ベクトルDBへ登録（3つのデータベースに分けて保存）
         sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
@@ -148,127 +172,158 @@ async def process_single_upload(
         sentence_id = Utils.generate_uuid()
         image_id = Utils.generate_uuid()
         
-        # 生成されたキャプションを3つの部分に分割
-        name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(created_caption)
-        
-        # 各部分のembeddingを生成
-        name_embedding = SentenceEmbeddingsManager.sentence_to_embedding(name_part)
-        usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
-        category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
-        
-        # 各データベースに同じsentence_idで保存
-        sentence_name_db_manager.collection.add(
-            ids=[sentence_id],
-            documents=[name_part],
-            metadatas=[ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=name_part,
-                is_success=is_created,
-                sentence_id=sentence_id
-            ).to_dict()],
-            embeddings=[name_embedding]
-        )
-        
-        sentence_usage_db_manager.collection.add(
-            ids=[sentence_id],
-            documents=[usage_part],
-            metadatas=[ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=usage_part,
-                is_success=is_created,
-                sentence_id=sentence_id
-            ).to_dict()],
-            embeddings=[usage_embedding]
-        )
-        
-        sentence_category_db_manager.collection.add(
-            ids=[sentence_id],
-            documents=[category_part],
-            metadatas=[ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=category_part,
-                is_success=is_created,
-                sentence_id=sentence_id
-            ).to_dict()],
-            embeddings=[category_embedding]
-        )
-        
-        # 画像データベースに保存
-        image_embedding = ImageEmbeddingsManager.image_to_embedding(save_path)
-        image_db_manager.collection.add(
-            ids=[image_id],
-            documents=[created_caption],
-            metadatas=[ChromaDBManager.ChromaMetaData(
-                path=png_path,
-                document=created_caption,
-                is_success=is_created,
-                sentence_id=image_id
-            ).to_dict()],
-            embeddings=[image_embedding]
-        )
+        try:
+            # 生成されたキャプションを3つの部分に分割
+            name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(created_caption)
+            
+            # 各部分のembeddingを生成
+            name_embedding = SentenceEmbeddingsManager.sentence_to_embedding(name_part)
+            usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
+            category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
+            
+            # 各データベースに同じsentence_idで保存
+            sentence_name_db_manager.collection.add(
+                ids=[sentence_id],
+                documents=[name_part],
+                metadatas=[ChromaDBManager.ChromaMetaData(
+                    path=png_path,
+                    document=name_part,
+                    is_success=is_created,
+                    sentence_id=sentence_id
+                ).to_dict()],
+                embeddings=[name_embedding]
+            )
+            
+            sentence_usage_db_manager.collection.add(
+                ids=[sentence_id],
+                documents=[usage_part],
+                metadatas=[ChromaDBManager.ChromaMetaData(
+                    path=png_path,
+                    document=usage_part,
+                    is_success=is_created,
+                    sentence_id=sentence_id
+                ).to_dict()],
+                embeddings=[usage_embedding]
+            )
+            
+            sentence_category_db_manager.collection.add(
+                ids=[sentence_id],
+                documents=[category_part],
+                metadatas=[ChromaDBManager.ChromaMetaData(
+                    path=png_path,
+                    document=category_part,
+                    is_success=is_created,
+                    sentence_id=sentence_id
+                ).to_dict()],
+                embeddings=[category_embedding]
+            )
+            
+            # 画像データベースに保存
+            image_embedding = ImageEmbeddingsManager.image_to_embedding(save_path)
+            image_db_manager.collection.add(
+                ids=[image_id],
+                documents=[created_caption],
+                metadatas=[ChromaDBManager.ChromaMetaData(
+                    path=png_path,
+                    document=created_caption,
+                    is_success=is_created,
+                    sentence_id=image_id
+                ).to_dict()],
+                embeddings=[image_embedding]
+            )
+        except Exception as chroma_error:
+            # ChromaDB挿入失敗時はファイルを削除してロールバック
+            if save_path.exists():
+                os.remove(save_path)
+            
+            # ChromaDBからの削除を試みる（既に挿入されたものがあれば）
+            try:
+                sentence_name_db_manager.collection.delete(ids=[sentence_id])
+                sentence_usage_db_manager.collection.delete(ids=[sentence_id])
+                sentence_category_db_manager.collection.delete(ids=[sentence_id])
+                image_db_manager.collection.delete(ids=[image_id])
+            except:
+                pass  # 削除失敗は無視（既に存在しない可能性）
+            
+            return UploadResult(
+                filename, 
+                False, 
+                f"ベクトルDB挿入失敗: {str(chroma_error)}", 
+                error_type="ChromaDBInsertError",
+                status_code=500
+            )
         
         is_created_for_sql = 'TRUE' if is_created else 'FALSE'
         escaped_caption = created_caption.replace("'", "''") if is_created else "NULL"
 
         clustering_id = Utils.generate_uuid()
         # 新しいスキーマに対応：統一sentence_idを保存
-        insert_query = f"""
-            INSERT INTO images(name, is_created_caption, caption, project_id, clustering_id, chromadb_sentence_id, chromadb_image_id, uploaded_user_id)
-            VALUES ('{escaped_png_path}', {is_created_for_sql}, {'NULL' if not is_created else f"'{escaped_caption}'"}, {project_id}, '{clustering_id}', '{sentence_id}', '{image_id}', '{uploaded_user_id}');
-        """
-        result, _ = execute_query(connect_session, insert_query)
+        caption_sql_value = 'NULL' if not is_created else f"'{escaped_caption}'"
+        result, _ = insert_image(connect_session, escaped_png_path, is_created_for_sql, caption_sql_value, project_id, clustering_id, sentence_id, image_id, uploaded_user_id)
 
-        if result:
-            # 挿入された画像のMySQLのID（自動採番）を取得
-            mysql_image_id_query = f"""
-                SELECT id FROM images WHERE clustering_id = '{clustering_id}';
-            """
-            mysql_image_id_result, _ = execute_query(connect_session, mysql_image_id_query)
+        if not result:
+            # MySQL挿入失敗時、ファイルとChromaDBをロールバック
+            if save_path.exists():
+                os.remove(save_path)
             
-            if mysql_image_id_result:
-                mysql_image_id = mysql_image_id_result.mappings().first()["id"]
-                
-                # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成
-                members_query = f"""
-                    SELECT user_id FROM project_memberships WHERE project_id = {project_id};
-                """
-                members_result, _ = execute_query(connect_session, members_query)
-                
-                if members_result:
-                    members = members_result.mappings().all()
-                    for member in members:
-                        user_id = member["user_id"]
-                        state_insert_query = f"""
-                            INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
-                            VALUES ({user_id}, {mysql_image_id}, {project_id}, 0);
-                        """
-                        execute_query(connect_session, state_insert_query)
-                    
-                    # 初期クラスタリングが完了している全メンバーのcontinuous_clustering_stateを2（実行可能）に更新
-                    update_continuous_state_query = f"""
-                        UPDATE project_memberships
-                        SET continuous_clustering_state = 2
-                        WHERE project_id = {project_id}
-                        AND init_clustering_state = 2
-                        AND continuous_clustering_state != 1;
-                    """
-                    execute_query(connect_session, update_continuous_state_query)
+            try:
+                sentence_name_db_manager.collection.delete(ids=[sentence_id])
+                sentence_usage_db_manager.collection.delete(ids=[sentence_id])
+                sentence_category_db_manager.collection.delete(ids=[sentence_id])
+                image_db_manager.collection.delete(ids=[image_id])
+            except Exception as cleanup_error:
+                print(f"⚠️ ChromaDB cleanup failed: {cleanup_error}")
             
-            processing_time = round(time.time() - start_time, 2)
+            return UploadResult(filename, False, "データベース挿入失敗", error_type="DatabaseInsertError", status_code=500)
+
+        # 挿入された画像のMySQLのID（自動採番）を取得
+        mysql_image_id_result, _ = select_image_id_by_clustering_id(connect_session, clustering_id)
+        
+        if not mysql_image_id_result:
+            # 画像ID取得失敗（既に挿入されているのでロールバックは慎重に）
+            print(f"⚠️ 画像ID取得失敗: clustering_id={clustering_id}")
             return UploadResult(
                 filename, 
-                True, 
-                "アップロード成功", 
-                {
-                    "clustering_id": clustering_id,
-                    "chromadb_sentence_id": sentence_id,  # 文章埋め込みのUUID
-                    "chromadb_image_id": image_id,  # 画像埋め込みのUUID
-                    "mysql_image_id": mysql_image_id,  # MySQLの自動採番ID
-                    "processing_time": processing_time
-                }
+                False, 
+                "画像ID取得失敗", 
+                error_type="ImageIdRetrievalError",
+                status_code=500
             )
-        else:
-            return UploadResult(filename, False, "データベース挿入失敗", error_type="DatabaseInsertError")
+        
+        mysql_image_id = mysql_image_id_result.mappings().first()["id"]
+        
+        # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成
+        members_result, _ = select_project_members(connect_session, project_id)
+        
+        if members_result:
+            members = members_result.mappings().all()
+            for member in members:
+                user_id = member["user_id"]
+                try:
+                    insert_user_image_state(connect_session, user_id=user_id, image_id=mysql_image_id, project_id=project_id, is_clustered=0)
+                except Exception as state_error:
+                    print(f"⚠️ user_image_clustering_states挿入失敗 (user_id={user_id}, image_id={mysql_image_id}): {state_error}")
+            
+            # 初期クラスタリングが完了している全メンバーのcontinuous_clustering_stateを2（実行可能）に更新
+            try:
+                update_project_members_continuous_state(connect_session, project_id)
+            except Exception as state_update_error:
+                print(f"⚠️ continuous_clustering_state更新失敗 (project_id={project_id}): {state_update_error}")
+        
+        processing_time = round(time.time() - start_time, 2)
+        return UploadResult(
+            filename, 
+            True, 
+            "アップロード成功", 
+            {
+                "clustering_id": clustering_id,
+                "chromadb_sentence_id": sentence_id,  # 文章埋め込みのUUID
+                "chromadb_image_id": image_id,  # 画像埋め込みのUUID
+                "mysql_image_id": mysql_image_id,  # MySQLの自動採番ID
+                "processing_time": processing_time
+            },
+            status_code=201
+        )
 
     except Exception as e:
         return UploadResult(
@@ -276,7 +331,8 @@ async def process_single_upload(
             False, 
             f"予期しないエラーが発生: {str(e)}", 
             {"error_detail": str(e)},
-            error_type=type(e).__name__
+            error_type=type(e).__name__,
+            status_code=500
         )
 
 # 画像一覧取得（指定されたプロジェクトIDに紐づく画像を返す）
@@ -300,10 +356,7 @@ def read_images(project_id: int = None):
             content={"message": "failed to connect to database", "data": None}
         )
 
-    query_text = f"""
-        SELECT id, name, is_created_caption, caption ,project_id, uploaded_user_id, created_at FROM images WHERE project_id = {project_id};
-    """
-    result, _ = execute_query(connect_session, query_text)
+    result, _ = get_images_by_project(connect_session, project_id)
     
     if result:
         rows = result.mappings().all()
@@ -397,22 +450,34 @@ async def upload_image(
     if result.success:
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
-            content={"message": result.message, "data": result.data}
+            content={
+                "success": True,
+                "message": result.message, 
+                "data": result.data
+            }
         )
     else:
         status_code = status.HTTP_409_CONFLICT if result.error_type == "ConflictError" else status.HTTP_400_BAD_REQUEST
-        if result.error_type in ["DatabaseConnectionError", "DatabaseInsertError"]:
+        if result.error_type in ["DatabaseConnectionError", "DatabaseInsertError", "ChromaDBInsertError", "ImageIdRetrievalError", "CaptionCreateError"]:
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        if result.error_type == "ProjectNotFoundError":
+            status_code = status.HTTP_404_NOT_FOUND
         
         return JSONResponse(
             status_code=status_code,
-            content={"message": result.message, "data": result.data}
+            content={
+                "success": False,
+                "message": result.message, 
+                "data": result.data,
+                "error_type": result.error_type
+            }
         )
 
 # バッチアップロード用エンドポイント
 @images_endpoint.post('/images/batch', tags=["images"], description="複数画像の並列アップロード", responses={
-    200: {"description": "Batch upload completed", "model": CustomResponseModel},
-    400: {"description": "Bad Request", "model": CustomResponseModel},
+    201: {"description": "All uploads succeeded", "model": CustomResponseModel},
+    207: {"description": "Multi-Status - Some uploads succeeded, some failed", "model": CustomResponseModel},
+    400: {"description": "Bad Request - All uploads failed or invalid request", "model": CustomResponseModel},
     500: {"description": "Internal Server Error", "model": CustomResponseModel}
 })
 async def batch_upload_images(
@@ -458,14 +523,20 @@ async def batch_upload_images(
     failure_count = 0
     success_results = []
     failure_results = []
+    conflict_count = 0
+    validation_error_count = 0
+    server_error_count = 0
     
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             failure_count += 1
+            server_error_count += 1
             failure_results.append({
                 "filename": files[i].filename if i < len(files) else "unknown",
+                "success": False,
                 "message": str(result),
                 "error_type": type(result).__name__,
+                "status_code": 500,
                 "data": {}
             })
         elif isinstance(result, UploadResult):
@@ -473,43 +544,85 @@ async def batch_upload_images(
                 success_count += 1
                 success_results.append({
                     "filename": result.filename,
+                    "success": True,
+                    "message": result.message,
+                    "status_code": result.status_code,
                     "data": result.data
                 })
             else:
                 failure_count += 1
+                
+                # エラータイプ別にカウント
+                if result.error_type == "ConflictError":
+                    conflict_count += 1
+                elif result.error_type == "ValidationError":
+                    validation_error_count += 1
+                else:
+                    server_error_count += 1
+                
                 failure_results.append({
                     "filename": result.filename,
+                    "success": False,
                     "message": result.message,
                     "error_type": result.error_type,
+                    "status_code": result.status_code,
                     "data": result.data
                 })
         else:
             # 予期しない結果タイプの場合
             failure_count += 1
+            server_error_count += 1
             failure_results.append({
                 "filename": files[i].filename if i < len(files) else "unknown",
+                "success": False,
                 "message": "予期しない結果タイプ",
                 "error_type": "UnexpectedResultType",
+                "status_code": 500,
                 "data": {}
             })
     
     total_time = round(time.time() - start_time, 2)
     
+    # すべて成功した場合は201、一部失敗は207（Multi-Status）、すべて失敗は適切なエラーコード
+    if failure_count == 0:
+        response_status_code = status.HTTP_201_CREATED
+        response_message = f"すべてのアップロードが成功しました ({success_count}件)"
+        response_success = True
+    elif success_count == 0:
+        # すべて失敗
+        response_status_code = status.HTTP_400_BAD_REQUEST
+        response_message = f"すべてのアップロードが失敗しました ({failure_count}件)"
+        response_success = False
+    else:
+        # 一部成功、一部失敗
+        response_status_code = status.HTTP_207_MULTI_STATUS
+        response_message = f"バッチアップロード完了: 成功 {success_count}件, 失敗 {failure_count}件"
+        response_success = False  # 一部失敗があるため全体としては失敗扱い
+    
     return JSONResponse(
-        status_code=status.HTTP_200_OK,
+        status_code=response_status_code,
         content={
-            "message": f"バッチアップロード完了: 成功 {success_count}件, 失敗 {failure_count}件",
+            "success": response_success,
+            "message": response_message,
             "data": {
                 "total_files": len(files),
                 "success_count": success_count,
                 "failure_count": failure_count,
+                "conflict_count": conflict_count,
+                "validation_error_count": validation_error_count,
+                "server_error_count": server_error_count,
                 "total_processing_time": total_time,
                 "settings": {
                     "max_concurrent": max_concurrent,
                     "upload_delay": upload_delay
                 },
                 "success_results": success_results,
-                "failure_results": failure_results
+                "failure_results": failure_results,
+                "summary": {
+                    "all_succeeded": failure_count == 0,
+                    "all_failed": success_count == 0,
+                    "partial_success": success_count > 0 and failure_count > 0
+                }
             }
         }
     )
@@ -542,9 +655,42 @@ def delete_image(image_id: str):
     if connect_session is None:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
 
-    query_text = f"DELETE FROM images WHERE id = '{image_id}';"
-    result, _ = execute_query(connect_session, query_text)
+    result, _ = delete_image(connect_session, image_id)
     if result:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     else:
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to delete image", "data": None})
+
+
+@images_endpoint.get('/images/captions', tags=["images"], description="指定フォルダ内の画像のキャプション一覧を取得")
+def get_captions_for_folder(mongo_result_id: str, folder_id: str):
+    """
+    指定された mongo_result_id と folder_id に対して、そのフォルダ内の画像(clustering_id)を取得し
+    MySQL の images テーブルから caption を取得して {folder_id: ..., captions: {clustering_id: caption, ...}} を返します。
+    """
+    # 1) Mongo から clustering_id 一覧を取得
+    rm = ResultManager(mongo_result_id)
+    leaf_res = rm.get_leaf_folder_image_clustering_ids(folder_id)
+    if not leaf_res or not leaf_res.get('success'):
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"message": leaf_res.get('error', 'Folder not found or not leaf'), "data": None})
+
+    clustering_ids = leaf_res.get('data', [])
+
+    # 2) DB から caption を取得
+    connect_session = create_connect_session()
+    if connect_session is None:
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"message": "failed to connect to database", "data": None})
+
+    captions = {}
+    for cid in clustering_ids:
+        try:
+            result, _ = select_caption_by_clustering_id(connect_session, cid)
+            if result and result.rowcount > 0:
+                row = result.mappings().first()
+                captions[cid] = row.get('caption')
+            else:
+                captions[cid] = None
+        except Exception as e:
+            captions[cid] = None
+
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"folder_id": folder_id, "captions": captions})

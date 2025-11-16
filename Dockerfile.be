@@ -17,6 +17,13 @@ COPY ./backend/requirements.txt .
 RUN pip install --upgrade pip setuptools
 RUN pip install -r requirements.txt
 
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# 継続的クラスタリングで使用するモデルを事前ダウンロード
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+
+# spaCy英語モデルをダウンロード
+RUN python -m spacy download en_core_web_md
+
+# NLTK WordNetデータをダウンロード
+RUN python -c "import nltk; nltk.download('wordnet', quiet=True); nltk.download('omw-1.4', quiet=True)"
 
 ENTRYPOINT ["python", "server.py"]

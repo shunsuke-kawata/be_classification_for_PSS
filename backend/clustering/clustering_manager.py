@@ -952,12 +952,10 @@ class InitClusteringManager:
             # 同じ名前のフォルダをまとめる
             usage_category_result_dict = self._merge_folders_by_name(usage_category_result_dict)
             
-            # caption全体フォルダに追加
-            overall_result_dict[overall_folder_id] = {
-                'data': usage_category_result_dict,
-                'is_leaf': False,
-                'name': overall_folder_name_tfidf
-            }
+            # ⭐ 変更: caption全体フォルダは作成せず、usage+categoryフォルダを直接overall_result_dictに追加
+            # 各usage+categoryフォルダをトップレベルに移動
+            for folder_id, folder_data in usage_category_result_dict.items():
+                overall_result_dict[folder_id] = folder_data
         
         # 同じ名前のフォルダをまとめる
         overall_result_dict = self._merge_folders_by_name(overall_result_dict)

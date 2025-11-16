@@ -104,11 +104,13 @@ class ResultManager:
             
             # 現在のノードIDをパスに追加（先頭に挿入）
             path.insert(0, current_id)
-            print(f"🔍 added to path: {current_id}, current path: {path}")
+            node_name = current_node.get('name', '(no name)')
+            print(f"🔍 added to path: {current_id} (name: {node_name}), current path: {path}")
             
             # 親ノードのIDを取得
             parent_id = current_node.get('parent_id')
-            print(f"🔍 parent_id: {parent_id}")
+            parent_name = all_nodes.get(parent_id, {}).get('name', '(no name)') if parent_id else None
+            print(f"🔍 parent_id: {parent_id} (name: {parent_name})")
             current_id = parent_id
         
         print(f"🔍 final path: {path}")
@@ -178,14 +180,25 @@ class ResultManager:
         target_node = self.find_node(node_id)
         if not target_node:
             raise ValueError(f"Node with id {node_id} not found")
-        source_folder_id = target_node['parent_id']
-        source_folder = self.find_node(source_folder_id)
-        if not source_folder:
-            raise ValueError(f"Node with id {source_folder_id} not found")
-        source_folder_file_data = source_folder.get('data',None)
-        if (source_folder_file_data is None):
-            raise ValueError(f"Node with id {source_folder_id} has no data")
-        del source_folder_file_data[node_id]
+
+        source_folder_id = target_node.get('parent_id')
+        if not source_folder_id:
+            raise ValueError(f"Source folder id for node {node_id} not found")
+
+        # まず result の該当フィールドを unset
+        source_parents = self.get_parents(source_folder_id)
+        if not source_parents:
+            raise ValueError(f"Could not determine parents for source folder {source_folder_id}")
+
+        source_data_path = f"result.{'.data.'.join(source_parents)}.data.{node_id}"
+        collection = self._mongo_module.get_collection(self._clustering_results)
+        collection.update_one(
+            {"mongo_result_id": self._mongo_result_id},
+            {"$unset": {source_data_path: ""}}
+        )
+
+        # all_nodes からも削除
+        self.remove_node_from_all_nodes(node_id)
 
     def move_folder_node(self, target_folder_ids: List[str], destination_folder_id: str) -> None:
         """
@@ -220,23 +233,26 @@ class ResultManager:
         
         source_folder_id = target_node['parent_id']
         
+        # 2. 移動するフォルダの完全なデータを取得（get_parents を使って result を辿る）
+        target_folder_parents = self.get_parents(target_folder_id)
+
         # 2. 移動するフォルダの完全なデータを取得
         target_folder_parents = self.get_parents(target_folder_id)
         target_folder_data_path = f"result.{'.data.'.join(target_folder_parents)}"
-        
+
         # target_folderの完全なデータ構造を取得
         target_folder_query = {"mongo_result_id": self._mongo_result_id}
         target_folder_projection = {target_folder_data_path: 1, "_id": 0}
-        
+
         target_folder_result = self._mongo_module.find_one_with_projection(
             self._clustering_results,
             target_folder_query,
             target_folder_projection
         )
-        
+
         if not target_folder_result:
             raise ValueError(f"Could not retrieve folder data for {target_folder_id}")
-        
+
         # 移動するフォルダの完全なデータ構造を抽出
         folder_data_parts = target_folder_data_path.split('.')
         folder_data = target_folder_result
@@ -624,55 +640,72 @@ class ResultManager:
             print(f"   clustering_id: {clustering_id}")
             print(f"   image_path: {image_path}")
             print(f"   target_folder_id: {target_folder_id}")
-            
+
             # all_nodesから対象フォルダを取得
             all_nodes = self.get_all_nodes()
             if not all_nodes:
                 return {"success": False, "error": "No clustering results found"}
-            
+
             target_node = all_nodes.get(target_folder_id)
             if not target_node:
                 return {"success": False, "error": f"Folder {target_folder_id} not found"}
-            
+
             if not target_node.get('is_leaf', False):
                 return {"success": False, "error": f"Folder {target_folder_id} is not a leaf folder"}
+
+            # get_parents を使って result 内の該当ノードに直接到達する
+            parents = self.get_parents(target_folder_id)
+            if not parents:
+                return {"success": False, "error": f"Parents not found for folder {target_folder_id}"}
+
+            # 1. resultのtarget_folderのdataに clustering_id:image_path を追加
+            # _perform_file_moveと同じ方式でパスを構築
+            destination_data_path = f"result.{'.data.'.join(parents)}.data.{clustering_id}"
+            destination_update = {destination_data_path: image_path}
             
-            # resultから対象フォルダを検索して画像を追加
-            def add_image_recursive(node: dict, target_id: str) -> bool:
-                for folder_id, folder_data in node.items():
-                    if folder_id == target_id:
-                        # リーフフォルダに画像を追加
-                        if folder_data.get('is_leaf', False):
-                            folder_data['data'][clustering_id] = image_path
-                            print(f"✅ 画像を追加: {clustering_id} -> {target_id}")
-                            return True
-                    elif not folder_data.get('is_leaf', False) and isinstance(folder_data.get('data'), dict):
-                        # 再帰的に探索
-                        if add_image_recursive(folder_data['data'], target_id):
-                            return True
-                return False
+            print(f"   📍 result更新パス: {destination_data_path}")
             
-            result = self.get_result()
-            if not add_image_recursive(result, target_folder_id):
-                return {"success": False, "error": f"Failed to add image to folder {target_folder_id}"}
+            self._mongo_module.update_document(
+                collection_name=self._clustering_results,
+                query={"mongo_result_id": self._mongo_result_id},
+                update=destination_update,
+                upsert=False
+            )
             
-            # all_nodesを更新
-            if 'data' not in target_node:
-                target_node['data'] = {}
-            target_node['data'][clustering_id] = image_path
+            # 2. all_nodesにファイルノードを追加
+            new_file_node = {
+                "type": "file",
+                "id": clustering_id,
+                "name": image_path,
+                "parent_id": target_folder_id,
+                "is_leaf": None
+            }
             
-            # MongoDBに変更をコミット
-            self.update_result(result, all_nodes)
+            all_nodes_file_node_path = f"all_nodes.{clustering_id}"
+            all_nodes_update = {all_nodes_file_node_path: new_file_node}
             
+            print(f"   📍 all_nodes更新パス: {all_nodes_file_node_path}")
+            
+            self._mongo_module.update_document(
+                collection_name=self._clustering_results,
+                query={"mongo_result_id": self._mongo_result_id},
+                update=all_nodes_update,
+                upsert=False
+            )
+
             print(f"✅ insert_image_to_leaf_folder完了")
+            print(f"   📄 all_nodesにファイルノード追加: {clustering_id}")
+            print(f"   📁 resultのフォルダ {target_folder_id} に画像追加")
             return {
                 "success": True,
                 "folder_id": target_folder_id,
                 "clustering_id": clustering_id
             }
-            
+
         except Exception as e:
             print(f"❌ insert_image_to_leaf_folder処理中にエラー: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def get_all_leaf_folders(self) -> List[dict]:
@@ -743,4 +776,216 @@ class ResultManager:
             
         except Exception as e:
             print(f"❌ get_folder_data_from_result処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_leaf_folder_image_clustering_ids(self, folder_id: str) -> dict:
+        """
+        指定したフォルダIDがリーフ（is_leaf=True）の場合、そのフォルダ内に含まれる
+        画像のclustering_id一覧を返します。
+
+        Returns:
+            dict: 成功時: {"success": True, "data": [<clustering_id>, ...]}
+                  失敗時: {"success": False, "error": str}
+        """
+        try:
+            if not folder_id or not folder_id.strip():
+                return {"success": False, "error": "Invalid folder_id provided"}
+
+            folder_data_result = self.get_folder_data_from_result(folder_id)
+
+            if not folder_data_result.get('success', False):
+                return {"success": False, "error": folder_data_result.get('error', f"Folder {folder_id} not found in result")}
+
+            folder_data = folder_data_result.get('data', {})
+            if not isinstance(folder_data, dict):
+                print(f"⚠️ folder_data is not a dict for folder {folder_id}: {type(folder_data)}")
+                return {"success": False, "error": "Folder data structure is invalid"}
+
+            clustering_ids = list(folder_data.keys())
+            print(f"🔍 clustering_ids for folder {folder_id}: count={len(clustering_ids)} sample={clustering_ids[:10]}")
+            return {"success": True, "data": clustering_ids}
+
+        except Exception as e:
+            print(f"❌ get_leaf_folder_image_clustering_ids処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def export_classification_data(self) -> dict:
+        """
+        分類結果データをエクスポート用に取得する
+        
+        Returns:
+            dict: エクスポートデータ
+            成功時: {"success": True, "result": dict, "all_nodes": dict}
+            失敗時: {"success": False, "error": str}
+        """
+        try:
+            result = self.get_result()
+            all_nodes = self.get_all_nodes()
+            
+            if result is None:
+                return {"success": False, "error": "Result data not found"}
+            
+            if all_nodes is None:
+                return {"success": False, "error": "All nodes data not found"}
+            
+            return {
+                "success": True,
+                "result": result,
+                "all_nodes": all_nodes
+            }
+            
+        except Exception as e:
+            print(f"❌ export_classification_data処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_child_folders(self, folder_id: str, folder_type: Optional[str] = None) -> dict:
+        """
+        指定されたフォルダIDの直下にあるフォルダ（子フォルダ）の node データ一覧を返すインターフェース。
+
+        Args:
+            folder_id (str): 対象フォルダのノードID
+
+            folder_type (Optional[str]): 返却する子フォルダの `type` を指定します。
+                例: "folder" や "file"。
+                指定されていない場合はフィルタを適用しません（すべての直下子ノードを返します）。
+
+        Returns:
+            dict: 成功時は {"success": True, "data": { <child_id>: <node_data>, ... }}
+                  失敗時は {"success": False, "error": str}
+
+        注意: 直下の子フォルダのみを返します（孫ノードは含みません）。
+        """
+        try:
+            if not folder_id or not folder_id.strip():
+                return {"success": False, "error": "Invalid folder_id provided"}
+
+            all_nodes = self.get_all_nodes()
+            if not all_nodes:
+                return {"success": False, "error": "No clustering results found"}
+
+            # 指定フォルダが存在するか確認
+            if folder_id not in all_nodes:
+                return {"success": False, "error": f"Folder with id '{folder_id}' not found"}
+
+            child_folders: Dict[str, Any] = {}
+            for node_id, node_data in all_nodes.items():
+                # 直下の子要素を収集
+                parent_id = node_data.get('parent_id')
+                if parent_id != folder_id:
+                    continue
+
+                # folder_type が指定されている場合は type フィールドでフィルタ
+                if folder_type and folder_type.strip():
+                    node_type = node_data.get('type')
+                    if node_type != folder_type:
+                        continue
+
+                child_folders[node_id] = node_data
+
+            return {"success": True, "data": child_folders}
+        except Exception as e:
+            print(f"❌ get_child_folders処理中にエラー: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def create_new_leaf_folder(
+        self, 
+        folder_name: str, 
+        parent_id: Optional[str], 
+        initial_clustering_id: str, 
+        initial_image_path: str
+    ) -> dict:
+        """
+        新しいリーフフォルダをトップレベル（またはparent配下）に作成し、初期画像を挿入する
+        
+        Args:
+            folder_name (str): 新しいフォルダの名前
+            parent_id (Optional[str]): 親フォルダID（Noneの場合はトップレベル）
+            initial_clustering_id (str): 初期画像のclustering_id
+            initial_image_path (str): 初期画像のパス
+            
+        Returns:
+            dict: 成功時: {"success": True, "folder_id": str}
+                  失敗時: {"success": False, "error": str}
+        """
+        try:
+            import uuid
+            
+            # 新しいフォルダIDを生成
+            new_folder_id = str(uuid.uuid4())
+            
+            # all_nodesとresultを取得
+            all_nodes = self.get_all_nodes()
+            result = self.get_result()
+            
+            if all_nodes is None or result is None:
+                return {"success": False, "error": "No clustering results found"}
+            
+            # 新しいフォルダノードを作成（all_nodes用）
+            new_folder_node = {
+                "type": "folder",
+                "id": new_folder_id,
+                "name": folder_name,
+                "parent_id": parent_id,
+                "is_leaf": True
+            }
+            
+            # 新しいファイルノード（画像）を作成（all_nodes用）
+            new_file_node = {
+                "type": "file",
+                "id": initial_clustering_id,  # clustering_idをファイルノードのIDとして使用
+                "name": initial_image_path,
+                "parent_id": new_folder_id,  # 新しいフォルダを親として指定
+                "is_leaf": None
+            }
+            
+            # all_nodesに両方追加
+            all_nodes[new_folder_id] = new_folder_node
+            all_nodes[initial_clustering_id] = new_file_node
+            
+            # resultに新しいフォルダを追加
+            new_folder_data = {
+                "is_leaf": True,
+                "data": {
+                    initial_clustering_id: initial_image_path
+                }
+            }
+            
+            if parent_id is None:
+                # トップレベルに追加
+                result[new_folder_id] = new_folder_data
+            else:
+                # 親フォルダの配下に追加
+                # resultを再帰的に探索して親フォルダを見つける
+                def add_to_parent_recursive(node: dict, target_parent_id: str) -> bool:
+                    for folder_id, folder_data in node.items():
+                        if folder_id == target_parent_id:
+                            # 親フォルダが見つかった
+                            if not folder_data.get('is_leaf', False):
+                                # 非リーフフォルダの場合、dataに追加
+                                folder_data['data'][new_folder_id] = new_folder_data
+                                return True
+                            else:
+                                # 親がリーフフォルダの場合はエラー
+                                return False
+                        elif not folder_data.get('is_leaf', False) and isinstance(folder_data.get('data'), dict):
+                            # 非リーフフォルダの場合、再帰的に探索
+                            if add_to_parent_recursive(folder_data['data'], target_parent_id):
+                                return True
+                    return False
+                
+                if not add_to_parent_recursive(result, parent_id):
+                    return {"success": False, "error": f"Parent folder {parent_id} not found or is a leaf folder"}
+            
+            # MongoDBに更新を保存
+            self.update_result(result, all_nodes)
+            
+            print(f"✅ create_new_leaf_folder: 新しいフォルダ '{folder_name}' (ID: {new_folder_id}) を作成しました")
+            print(f"   📁 フォルダノード追加: {new_folder_id}")
+            print(f"   📄 ファイルノード追加: {initial_clustering_id} (name: {initial_image_path})")
+            return {"success": True, "folder_id": new_folder_id}
+            
+        except Exception as e:
+            print(f"❌ create_new_leaf_folder処理中にエラー: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}

@@ -5,8 +5,15 @@ import os
 from typing import List
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-from db_utils.commons import create_connect_session, execute_query
+from db_utils.commons import create_connect_session
 from db_utils.models import CustomResponseModel
+from db_utils.user_image_clustering_states_queries import (
+    get_user_image_clustering_states,
+    get_unclustered_count,
+    mark_images_as_clustered,
+    mark_all_images_as_clustered,
+    get_clustered_count_after_mark_all,
+)
 
 # エンドポイントの作成
 user_image_clustering_states_endpoint = APIRouter()
@@ -57,24 +64,7 @@ def get_user_image_clustering_states(
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     
-    query_text = f"""
-        SELECT 
-            uics.user_id,
-            uics.image_id,
-            uics.project_id,
-            uics.is_clustered,
-            uics.clustered_at,
-            uics.created_at,
-            uics.updated_at,
-            i.name as image_name,
-            i.clustering_id
-        FROM user_image_clustering_states uics
-        JOIN images i ON uics.image_id = i.id
-        WHERE {where_clause}
-        ORDER BY uics.created_at DESC;
-    """
-    
-    result, _ = execute_query(connect_session, query_text)
+    result, _ = get_user_image_clustering_states(session=connect_session, where_clause=where_clause)
     
     if result:
         rows = result.mappings().all()
@@ -121,13 +111,7 @@ def get_unclustered_count(user_id: int, project_id: int):
             content={"message": "failed to connect to database", "data": None}
         )
     
-    query_text = f"""
-        SELECT COUNT(*) as unclustered_count
-        FROM user_image_clustering_states
-        WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 0;
-    """
-    
-    result, _ = execute_query(connect_session, query_text)
+    result, _ = get_unclustered_count(session=connect_session, user_id=user_id, project_id=project_id)
     
     if result:
         count = result.mappings().first()["unclustered_count"]
@@ -188,13 +172,7 @@ def mark_images_as_clustered(
     # 複数の画像IDを一度に更新
     image_ids_str = ",".join(map(str, image_ids))
     
-    query_text = f"""
-        UPDATE user_image_clustering_states
-        SET is_clustered = 1, clustered_at = CURRENT_TIMESTAMP(6)
-        WHERE user_id = {user_id} AND project_id = {project_id} AND image_id IN ({image_ids_str});
-    """
-    
-    result, _ = execute_query(connect_session, query_text)
+    result, _ = mark_images_as_clustered(session=connect_session, user_id=user_id, project_id=project_id, image_ids_str=image_ids_str)
     
     if result is not None:
         return JSONResponse(
@@ -247,24 +225,13 @@ def mark_all_images_as_clustered(user_id: int, project_id: int):
             content={"message": "failed to connect to database", "data": None}
         )
     
-    query_text = f"""
-        UPDATE user_image_clustering_states
-        SET is_clustered = 1, clustered_at = CURRENT_TIMESTAMP(6)
-        WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 0;
-    """
-    
-    result, _ = execute_query(connect_session, query_text)
-    
+    result, _ = mark_all_images_as_clustered(session=connect_session, user_id=user_id, project_id=project_id)
+
     if result is not None:
         # 更新された件数を取得
-        count_query = f"""
-            SELECT COUNT(*) as updated_count
-            FROM user_image_clustering_states
-            WHERE user_id = {user_id} AND project_id = {project_id} AND is_clustered = 1;
-        """
-        count_result, _ = execute_query(connect_session, count_query)
+        count_result, _ = get_clustered_count_after_mark_all(session=connect_session, user_id=user_id, project_id=project_id)
         updated_count = count_result.mappings().first()["updated_count"] if count_result else 0
-        
+
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
