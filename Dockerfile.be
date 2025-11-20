@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
     libmariadb-dev-compat \
     default-libmysqlclient-dev \
     build-essential \
-    cmake
+    cmake \
+    curl
 
 COPY ./backend/requirements.txt .
 
