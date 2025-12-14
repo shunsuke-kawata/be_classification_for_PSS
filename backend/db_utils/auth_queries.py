@@ -36,3 +36,16 @@ def insert_user_image_state(session, user_id: int, image_id: int, project_id: in
         VALUES ({user_id}, {image_id}, {project_id}, {is_clustered});
     """
     return execute_query(session=session, query_text=query_text)
+
+
+def bulk_insert_user_image_states(session, user_ids: list, image_id: int, project_id: int, is_clustered: int = 0) -> Tuple[Any, Any]:
+    """user_image_clustering_states に複数レコードを一括挿入します。"""
+    if not user_ids:
+        return None, None
+    
+    values = ", ".join([f"({user_id}, {image_id}, {project_id}, {is_clustered})" for user_id in user_ids])
+    query_text = f"""
+        INSERT INTO user_image_clustering_states(user_id, image_id, project_id, is_clustered)
+        VALUES {values};
+    """
+    return execute_query(session=session, query_text=query_text)

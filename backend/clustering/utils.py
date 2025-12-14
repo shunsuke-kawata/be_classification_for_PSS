@@ -10,7 +10,29 @@ from PIL import Image
 import zipfile
 import tempfile
 
-EXPAMPLE_JSON_PATH = Path('captions_20250522_013210.json')
+EXPAMPLE_JSON_PATH = Path('captions_20251120170437.json') #すでに生成されているキャプションのデータ
+
+# キャプションデータをモジュールレベルでキャッシュ（起動時に一度だけ読み込み）
+_caption_cache = None
+_caption_cache_lock = None
+
+def _load_caption_cache():
+    """キャプションデータを一度だけ読み込んでキャッシュ"""
+    global _caption_cache, _caption_cache_lock
+    if _caption_cache is None:
+        from threading import Lock
+        if _caption_cache_lock is None:
+            _caption_cache_lock = Lock()
+        with _caption_cache_lock:
+            if _caption_cache is None:  # ダブルチェック
+                try:
+                    with open(EXPAMPLE_JSON_PATH, encoding='utf-8') as f:
+                        _caption_cache = json.load(f)
+                    print(f"✅ キャプションデータをキャッシュしました: {len(_caption_cache)} 件")
+                except Exception as e:
+                    print(f"⚠️ キャプションデータの読み込み失敗: {e}")
+                    _caption_cache = {}
+    return _caption_cache
 
 class Utils:
     
@@ -32,24 +54,56 @@ class Utils:
         
     @classmethod
     def get_exmaple_caption(cls, path: str) -> dict:
-        with open(EXPAMPLE_JSON_PATH, encoding='utf-8') as f:
-            data = json.load(f)
-
-        for item in data:
-            if item.get("path") == path:
-                return item.get("is_success"),item.get("caption")
+        """
+        ファイル名をキーとしてキャプション情報を取得（キャッシュ版）
         
-        return False,"No caption found."
+        Args:
+            path: 画像ファイル名（例: "scissors_74268663-58a1-4f18-a9c3-c406736266cc.png"）
+            
+        Returns:
+            tuple: (is_success: bool, caption: str)
+        """
+        try:
+            # キャッシュからデータを取得
+            data = _load_caption_cache()
+            
+            # ファイル名をキーとして直接取得
+            if path in data:
+                item = data[path]
+                return item.get("is_success", False), item.get("caption", "No caption found.")
+            else:
+                print(f"⚠️ キャプション取得失敗: ファイル '{path}' がキャプションデータに存在しません")
+                return False, "No caption found."
+                
+        except Exception as e:
+            print(f"❌ キャプション取得中に予期しないエラー: {e}")
+            return False, f"Error: {str(e)}"
     
     @classmethod
-    # 画像ファイルを最高画質でPNGに変換する
-    def image2png(cls,byte_image):
+    # 画像ファイルを適切な品質でPNGに変換する
+    def image2png(cls, byte_image, max_dimension: int = 2048):
+        """
+        画像をPNG形式に変換（適切な圧縮とリサイズを適用）
+        
+        Args:
+            byte_image: 画像のバイトデータ
+            max_dimension: 最大画像サイズ（幅・高さの最大値、デフォルト2048px）
+        
+        Returns:
+            PNG形式の画像バイトデータ
+        """
         # バイトデータを PIL イメージに変換
         image = Image.open(BytesIO(byte_image))
-
-        # PNGとして最高画質（圧縮率最小 = compress_level=0）で保存
+        
+        # 大きすぎる画像はリサイズ（アスペクト比維持）
+        # embedding生成時は224x224にリサイズされるため、事前に縮小しても問題なし
+        if image.size[0] > max_dimension or image.size[1] > max_dimension:
+            image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+        
+        # PNGとして適切な圧縮レベル（6）で保存
+        # compress_level=6: バランスの良い圧縮（0=無圧縮/最大サイズ, 9=最大圧縮/最遅）
         png_image_io = BytesIO()
-        image.save(png_image_io, format='PNG', optimize=True, compress_level=0)
+        image.save(png_image_io, format='PNG', compress_level=6)
         png_image_io.seek(0)
 
         return png_image_io.getvalue()

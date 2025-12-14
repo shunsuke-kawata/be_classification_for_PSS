@@ -446,6 +446,7 @@ class InitClusteringManager:
     def _merge_similar_clusters(self, clusters: dict, embeddings: list, image_embeddings_dict: dict) -> dict:
         """
         凝集度が高く、他クラスタと類似しているクラスタをマージする
+        画像ベクトルと文章ベクトルの両方を使用してマージ判定を行う
         
         Args:
             clusters: {cluster_id: [sentence_ids]} の辞書
@@ -458,35 +459,76 @@ class InitClusteringManager:
         if len(clusters) <= 1:
             return clusters
         
-        # 各クラスタの凝集度と中心を計算
+        # sentence_idとembeddingsのインデックスのマッピングを作成
+        sentence_id_to_embedding_index = {}
+        for cluster_id, sentence_ids in clusters.items():
+            for idx, sid in enumerate(sentence_ids):
+                sentence_id_to_embedding_index[sid] = idx
+        
+        # 各クラスタの凝集度と中心を計算（画像と文章の両方）
         cluster_info = {}
         for cluster_id, sentence_ids in clusters.items():
-            # sentence_idから対応するimage_embeddingを取得
+            # 画像埋め込みベクトルを取得
             cluster_image_embeddings = []
+            cluster_sentence_embeddings = []
             valid_indices = []
+            
             for idx, sid in enumerate(sentence_ids):
+                # 画像埋め込み
                 if sid in image_embeddings_dict:
                     cluster_image_embeddings.append(image_embeddings_dict[sid])
                     valid_indices.append(idx)
+                
+                # 文章埋め込み
+                if sid in sentence_id_to_embedding_index:
+                    emb_idx = sentence_id_to_embedding_index[sid]
+                    if emb_idx < len(embeddings):
+                        cluster_sentence_embeddings.append(embeddings[emb_idx])
             
-            if not cluster_image_embeddings:
-                # 画像埋め込みがない場合でもクラスタは保持
+            if not cluster_image_embeddings and not cluster_sentence_embeddings:
+                # 両方の埋め込みがない場合でもクラスタは保持
                 cluster_info[cluster_id] = {
                     'sentence_ids': sentence_ids,
-                    'cohesion': 0.0,  # 凝集度なし
-                    'center': None,
+                    'image_cohesion': 0.0,
+                    'sentence_cohesion': 0.0,
+                    'image_center': None,
+                    'sentence_center': None,
                     'size': len(sentence_ids)
                 }
                 continue
             
-            # 画像特徴量での凝集度を計算
-            cohesion = self._calculate_cluster_cohesion(cluster_image_embeddings, list(range(len(cluster_image_embeddings))))
-            center = self._calculate_cluster_center(cluster_image_embeddings, list(range(len(cluster_image_embeddings))))
+            # 画像特徴量での凝集度と中心を計算
+            image_cohesion = 0.0
+            image_center = None
+            if cluster_image_embeddings:
+                image_cohesion = self._calculate_cluster_cohesion(
+                    cluster_image_embeddings, 
+                    list(range(len(cluster_image_embeddings)))
+                )
+                image_center = self._calculate_cluster_center(
+                    cluster_image_embeddings, 
+                    list(range(len(cluster_image_embeddings)))
+                )
+            
+            # 文章特徴量での凝集度と中心を計算
+            sentence_cohesion = 0.0
+            sentence_center = None
+            if cluster_sentence_embeddings:
+                sentence_cohesion = self._calculate_cluster_cohesion(
+                    cluster_sentence_embeddings, 
+                    list(range(len(cluster_sentence_embeddings)))
+                )
+                sentence_center = self._calculate_cluster_center(
+                    cluster_sentence_embeddings, 
+                    list(range(len(cluster_sentence_embeddings)))
+                )
             
             cluster_info[cluster_id] = {
                 'sentence_ids': sentence_ids,
-                'cohesion': cohesion,
-                'center': center,
+                'image_cohesion': image_cohesion,
+                'sentence_cohesion': sentence_cohesion,
+                'image_center': image_center,
+                'sentence_center': sentence_center,
                 'size': len(sentence_ids)
             }
         
@@ -506,13 +548,16 @@ class InitClusteringManager:
             
             info_1 = cluster_info[cluster_id_1]
             
-            # 凝集度が閾値未満、または中心がないクラスタは個別に保持
-            if info_1['cohesion'] < self.COHESION_THRESHOLD or info_1['center'] is None:
+            # 画像と文章の両方の凝集度が閾値以上、かつ両方の中心が存在する場合のみマージを検討
+            image_cohesion_ok = info_1['image_cohesion'] >= self.COHESION_THRESHOLD and info_1['image_center'] is not None
+            sentence_cohesion_ok = info_1['sentence_cohesion'] >= self.COHESION_THRESHOLD and info_1['sentence_center'] is not None
+            
+            if not (image_cohesion_ok and sentence_cohesion_ok):
                 merged[cluster_id_1] = info_1['sentence_ids']
                 used_clusters.add(cluster_id_1)
                 continue
             
-            # 他のクラスタとの類似度を計算
+            # 他のクラスタとの類似度を計算（画像と文章の両方）
             merge_candidates = [cluster_id_1]
             
             for j, cluster_id_2 in enumerate(cluster_ids[i+1:], start=i+1):
@@ -521,22 +566,35 @@ class InitClusteringManager:
                 
                 info_2 = cluster_info[cluster_id_2]
                 
-                # 両方のクラスタが凝集度が高く、中心がある場合のみマージを検討
-                if info_2['cohesion'] < self.COHESION_THRESHOLD or info_2['center'] is None:
+                # 両方のクラスタが画像・文章ともに凝集度が高く、中心がある場合のみマージを検討
+                image_cohesion_ok_2 = info_2['image_cohesion'] >= self.COHESION_THRESHOLD and info_2['image_center'] is not None
+                sentence_cohesion_ok_2 = info_2['sentence_cohesion'] >= self.COHESION_THRESHOLD and info_2['sentence_center'] is not None
+                
+                if not (image_cohesion_ok_2 and sentence_cohesion_ok_2):
                     continue
                 
-                # クラスタ中心間の類似度を計算
-                similarity = np.dot(info_1['center'], info_2['center']) / (
-                    np.linalg.norm(info_1['center']) * np.linalg.norm(info_2['center'])
+                # クラスタ中心間の類似度を計算（画像と文章の両方）
+                image_similarity = np.dot(info_1['image_center'], info_2['image_center']) / (
+                    np.linalg.norm(info_1['image_center']) * np.linalg.norm(info_2['image_center'])
                 )
                 
-                if similarity >= self.MERGE_SIMILARITY_THRESHOLD:
+                sentence_similarity = np.dot(info_1['sentence_center'], info_2['sentence_center']) / (
+                    np.linalg.norm(info_1['sentence_center']) * np.linalg.norm(info_2['sentence_center'])
+                )
+                
+                # 画像と文章の両方の類似度が閾値以上の場合のみマージ
+                if image_similarity >= self.MERGE_SIMILARITY_THRESHOLD and sentence_similarity >= self.MERGE_SIMILARITY_THRESHOLD:
                     merge_candidates.append(cluster_id_2)
                     used_clusters.add(cluster_id_2)
+                    print(f"    マージ候補追加: クラスタ{cluster_id_1} ← クラスタ{cluster_id_2}")
+                    print(f"      画像凝集度: {info_1['image_cohesion']:.3f}, {info_2['image_cohesion']:.3f}")
+                    print(f"      文章凝集度: {info_1['sentence_cohesion']:.3f}, {info_2['sentence_cohesion']:.3f}")
+                    print(f"      画像類似度: {image_similarity:.3f}, 文章類似度: {sentence_similarity:.3f}")
             
             # マージ実行
             if len(merge_candidates) > 1:
-                print(f"  マージ: {len(merge_candidates)}個のクラスタを統合（凝集度: {info_1['cohesion']:.3f}）")
+                print(f"  ✅ マージ: {len(merge_candidates)}個のクラスタを統合")
+                print(f"     画像凝集度: {info_1['image_cohesion']:.3f}, 文章凝集度: {info_1['sentence_cohesion']:.3f}")
                 merged_sentence_ids = []
                 for cid in merge_candidates:
                     merged_sentence_ids.extend(cluster_info[cid]['sentence_ids'])
@@ -888,18 +946,32 @@ class InitClusteringManager:
         # ========================================
         overall_result_dict = {}
         
+        # 全ての caption全体クラスタのキャプションを事前に収集（兄弟フォルダとの差別化用）
+        all_overall_captions_by_cluster = {}
         for overall_idx, sentence_ids_in_overall in overall_clusters.items():
-            overall_folder_id = Utils.generate_uuid()
-            
-            # caption全体フォルダ名を決定
             overall_captions = []
             for sentence_id in sentence_ids_in_overall:
                 for i, sid in enumerate(usage_data['ids']):
                     if sid == sentence_id:
                         overall_captions.append(f"{usage_data['documents'][i].document} {category_data['documents'][i].document}")
                         break
+            all_overall_captions_by_cluster[overall_idx] = overall_captions
+        
+        for overall_idx, sentence_ids_in_overall in overall_clusters.items():
+            overall_folder_id = Utils.generate_uuid()
             
-            overall_folder_name_tfidf = self._get_folder_name(overall_captions, ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES)
+            # caption全体フォルダ名を兄弟フォルダとの差別化を考慮して決定
+            target_captions = all_overall_captions_by_cluster[overall_idx]
+            sibling_captions_list = [captions for idx, captions in all_overall_captions_by_cluster.items() if idx != overall_idx]
+            
+            if len(sibling_captions_list) > 0:
+                overall_folder_name_tfidf = self._get_folder_name_with_sibling_comparison(
+                    target_captions, 
+                    sibling_captions_list, 
+                    ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES
+                )
+            else:
+                overall_folder_name_tfidf = self._get_folder_name(target_captions, ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES)
             
             print(f"\n【第2段階】usage+categoryでクラスタリング (全体クラスタ {overall_idx}: {overall_folder_name_tfidf})")
             
@@ -1113,10 +1185,12 @@ class InitClusteringManager:
             usage_category_result_dict = self._merge_folders_by_name(usage_category_result_dict)
             print(f"  ✅ usage+category階層フォルダマージ後: {len(usage_category_result_dict)}個")
             
-            # ⭐ 変更: caption全体フォルダは作成せず、usage+categoryフォルダを直接overall_result_dictに追加
-            # 各usage+categoryフォルダをトップレベルに移動
-            for folder_id, folder_data in usage_category_result_dict.items():
-                overall_result_dict[folder_id] = folder_data
+            # caption全体フォルダを作成してusage+categoryフォルダをその下に配置
+            overall_result_dict[overall_folder_id] = {
+                'data': usage_category_result_dict,
+                'is_leaf': False,
+                'name': overall_folder_name_tfidf
+            }
         
         # 同じ名前のフォルダをまとめる
         print(f"\n🔄 トップレベルフォルダマージ前: {len(overall_result_dict)}個")

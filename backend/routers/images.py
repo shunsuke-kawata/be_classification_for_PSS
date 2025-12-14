@@ -8,6 +8,8 @@ import asyncio
 import time
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+from PIL import Image
 from fastapi import APIRouter, Response, UploadFile, File, Form, status, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -28,7 +30,7 @@ from db_utils.images_queries import (
     delete_image,
     select_caption_by_clustering_id,
 )
-from db_utils.auth_queries import insert_user_image_state
+from db_utils.auth_queries import insert_user_image_state, bulk_insert_user_image_states
 from db_utils.validators import validate_data
 from db_utils.models import CustomResponseModel, NewImage
 from pathlib import Path
@@ -44,6 +46,26 @@ images_endpoint = APIRouter()
 
 # アップロード状況を管理するディクショナリ
 upload_status_cache = {}
+
+# ChromaDB マネージャの遅延初期化シングルトン
+_sentence_name_db_manager = None
+_sentence_usage_db_manager = None
+_sentence_category_db_manager = None
+_image_db_manager = None
+
+def get_chroma_managers():
+    """ChromaDBManager インスタンスを一度だけ生成して返す（スレッドセーフを厳密には保証しない簡易実装）。"""
+    global _sentence_name_db_manager, _sentence_usage_db_manager, _sentence_category_db_manager, _image_db_manager
+    if _sentence_name_db_manager is None:
+        try:
+            _sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
+            _sentence_usage_db_manager = ChromaDBManager("sentence_usage_embeddings")
+            _sentence_category_db_manager = ChromaDBManager("sentence_category_embeddings")
+            _image_db_manager = ChromaDBManager("image_embeddings")
+        except Exception as e:
+            # 初期化失敗は遅延して再試行するため None のままにする
+            pass
+    return _sentence_name_db_manager, _sentence_usage_db_manager, _sentence_category_db_manager, _image_db_manager
 
 class UploadResult:
     def __init__(self, filename: str, success: bool, message: str, data: dict = None, error_type: str = None, status_code: int = None):
@@ -104,15 +126,18 @@ async def process_single_upload(
     
     try:
         # ファイル妥当性チェック
+        validation_start = time.time()
         is_valid, validation_message = validate_image_file(file)
         if not is_valid:
             return UploadResult(filename, False, validation_message, error_type="ValidationError", status_code=400)
 
+        db_start = time.time()
         connect_session = create_connect_session()
         if connect_session is None:
             return UploadResult(filename, False, "データベース接続失敗", error_type="DatabaseConnectionError", status_code=500)
 
         # プロジェクトのoriginal_images_folder_pathを取得
+        project_check_start = time.time()
         result, _ = get_project_original_images_folder_path(connect_session, project_id)
         
         if not result or result.rowcount == 0:
@@ -128,6 +153,7 @@ async def process_single_upload(
         save_path = save_dir / png_path
 
         # 【重要】ファイル保存前に同名画像が既に存在するか確認（DB + ファイルシステム）
+        conflict_start = time.time()
         result, _ = check_image_exists(connect_session, escaped_png_path, project_id)
         file_exists_in_fs = save_path.exists()
         
@@ -148,13 +174,27 @@ async def process_single_upload(
                 status_code=409
             )
 
-        # Conflictチェック通過後にファイルを読み込み・保存
+        # Conflictチェック通過後にファイルを読み込み
+        file_read_start = time.time()
         contents = await file.read()
-        png_bytes = Utils.image2png(contents)
+        
+        # PNG変換（圧縮なし、元の品質を維持）
+        temp_save_start = time.time()
+        if filename.lower().endswith('.png'):
+            # 既にPNGの場合はそのまま保存
+            png_bytes = contents
+        else:
+            # PNG以外の形式の場合は無圧縮でPNGに変換
+            temp_image = Image.open(BytesIO(contents))
+            temp_png_io = BytesIO()
+            temp_image.save(temp_png_io, format='PNG', compress_level=0)
+            png_bytes = temp_png_io.getvalue()
+        
         with open(save_path, "wb") as f:
             f.write(png_bytes)
 
         # 仮のキャプション生成
+        caption_start = time.time()
         is_created, created_caption = Utils.get_exmaple_caption(png_path)
         if not (is_created):
             # ファイルを削除してロールバック
@@ -163,10 +203,14 @@ async def process_single_upload(
             return UploadResult(filename, False, "キャプション生成失敗", error_type="CaptionCreateError", status_code=500)
 
         # ベクトルDBへ登録（3つのデータベースに分けて保存）
-        sentence_name_db_manager = ChromaDBManager("sentence_name_embeddings")
-        sentence_usage_db_manager = ChromaDBManager("sentence_usage_embeddings")
-        sentence_category_db_manager = ChromaDBManager("sentence_category_embeddings")
-        image_db_manager = ChromaDBManager("image_embeddings")
+        chroma_init_start = time.time()
+        sentence_name_db_manager, sentence_usage_db_manager, sentence_category_db_manager, image_db_manager = get_chroma_managers()
+
+        if not sentence_name_db_manager or not sentence_usage_db_manager or not sentence_category_db_manager or not image_db_manager:
+            # ChromaDB の初期化に失敗している場合はアップロードを中断
+            if save_path.exists():
+                os.remove(save_path)
+            return UploadResult(filename, False, "ベクトルDB 初期化失敗", error_type="ChromaDBInitError", status_code=500)
         
         # chroma_sentence_idを生成
         sentence_id = Utils.generate_uuid()
@@ -174,63 +218,90 @@ async def process_single_upload(
         
         try:
             # 生成されたキャプションを3つの部分に分割
+            split_start = time.time()
             name_part, usage_part, category_part = ChromaDBManager.split_sentence_document(created_caption)
             
-            # 各部分のembeddingを生成
-            name_embedding = SentenceEmbeddingsManager.sentence_to_embedding(name_part)
-            usage_embedding = SentenceEmbeddingsManager.sentence_to_embedding(usage_part)
-            category_embedding = SentenceEmbeddingsManager.sentence_to_embedding(category_part)
+            # 各部分のembeddingを並列生成（高速化）
+            embedding_start = time.time()
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                name_future = executor.submit(SentenceEmbeddingsManager.sentence_to_embedding, name_part)
+                usage_future = executor.submit(SentenceEmbeddingsManager.sentence_to_embedding, usage_part)
+                category_future = executor.submit(SentenceEmbeddingsManager.sentence_to_embedding, category_part)
+                
+                name_embedding = name_future.result()
+                usage_embedding = usage_future.result()
+                category_embedding = category_future.result()
             
-            # 各データベースに同じsentence_idで保存
-            sentence_name_db_manager.collection.add(
-                ids=[sentence_id],
-                documents=[name_part],
-                metadatas=[ChromaDBManager.ChromaMetaData(
+            # 画像embeddingを生成（並列化の準備）
+            image_emb_start = time.time()
+            image_embedding = ImageEmbeddingsManager.image_to_embedding(save_path)
+            
+            # ChromaDBへの挿入を並列実行（高速化）
+            chroma_insert_start = time.time()
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                name_meta = ChromaDBManager.ChromaMetaData(
                     path=png_path,
                     document=name_part,
                     is_success=is_created,
                     sentence_id=sentence_id
-                ).to_dict()],
-                embeddings=[name_embedding]
-            )
-            
-            sentence_usage_db_manager.collection.add(
-                ids=[sentence_id],
-                documents=[usage_part],
-                metadatas=[ChromaDBManager.ChromaMetaData(
+                ).to_dict()
+                
+                usage_meta = ChromaDBManager.ChromaMetaData(
                     path=png_path,
                     document=usage_part,
                     is_success=is_created,
                     sentence_id=sentence_id
-                ).to_dict()],
-                embeddings=[usage_embedding]
-            )
-            
-            sentence_category_db_manager.collection.add(
-                ids=[sentence_id],
-                documents=[category_part],
-                metadatas=[ChromaDBManager.ChromaMetaData(
+                ).to_dict()
+                
+                category_meta = ChromaDBManager.ChromaMetaData(
                     path=png_path,
                     document=category_part,
                     is_success=is_created,
                     sentence_id=sentence_id
-                ).to_dict()],
-                embeddings=[category_embedding]
-            )
-            
-            # 画像データベースに保存
-            image_embedding = ImageEmbeddingsManager.image_to_embedding(save_path)
-            image_db_manager.collection.add(
-                ids=[image_id],
-                documents=[created_caption],
-                metadatas=[ChromaDBManager.ChromaMetaData(
+                ).to_dict()
+                
+                image_meta = ChromaDBManager.ChromaMetaData(
                     path=png_path,
                     document=created_caption,
                     is_success=is_created,
                     sentence_id=image_id
-                ).to_dict()],
-                embeddings=[image_embedding]
-            )
+                ).to_dict()
+                
+                # 並列挿入
+                futures = [
+                    executor.submit(
+                        sentence_name_db_manager.collection.add,
+                        ids=[sentence_id],
+                        documents=[name_part],
+                        metadatas=[name_meta],
+                        embeddings=[name_embedding]
+                    ),
+                    executor.submit(
+                        sentence_usage_db_manager.collection.add,
+                        ids=[sentence_id],
+                        documents=[usage_part],
+                        metadatas=[usage_meta],
+                        embeddings=[usage_embedding]
+                    ),
+                    executor.submit(
+                        sentence_category_db_manager.collection.add,
+                        ids=[sentence_id],
+                        documents=[category_part],
+                        metadatas=[category_meta],
+                        embeddings=[category_embedding]
+                    ),
+                    executor.submit(
+                        image_db_manager.collection.add,
+                        ids=[image_id],
+                        documents=[created_caption],
+                        metadatas=[image_meta],
+                        embeddings=[image_embedding]
+                    )
+                ]
+                
+                # 全ての挿入が完了するまで待機
+                for future in futures:
+                    future.result()
         except Exception as chroma_error:
             # ChromaDB挿入失敗時はファイルを削除してロールバック
             if save_path.exists():
@@ -238,11 +309,15 @@ async def process_single_upload(
             
             # ChromaDBからの削除を試みる（既に挿入されたものがあれば）
             try:
-                sentence_name_db_manager.collection.delete(ids=[sentence_id])
-                sentence_usage_db_manager.collection.delete(ids=[sentence_id])
-                sentence_category_db_manager.collection.delete(ids=[sentence_id])
-                image_db_manager.collection.delete(ids=[image_id])
-            except:
+                if sentence_name_db_manager:
+                    sentence_name_db_manager.collection.delete(ids=[sentence_id])
+                if sentence_usage_db_manager:
+                    sentence_usage_db_manager.collection.delete(ids=[sentence_id])
+                if sentence_category_db_manager:
+                    sentence_category_db_manager.collection.delete(ids=[sentence_id])
+                if image_db_manager:
+                    image_db_manager.collection.delete(ids=[image_id])
+            except Exception:
                 pass  # 削除失敗は無視（既に存在しない可能性）
             
             return UploadResult(
@@ -259,6 +334,7 @@ async def process_single_upload(
         clustering_id = Utils.generate_uuid()
         # 新しいスキーマに対応：統一sentence_idを保存
         caption_sql_value = 'NULL' if not is_created else f"'{escaped_caption}'"
+        mysql_insert_start = time.time()
         result, _ = insert_image(connect_session, escaped_png_path, is_created_for_sql, caption_sql_value, project_id, clustering_id, sentence_id, image_id, uploaded_user_id)
 
         if not result:
@@ -267,21 +343,25 @@ async def process_single_upload(
                 os.remove(save_path)
             
             try:
-                sentence_name_db_manager.collection.delete(ids=[sentence_id])
-                sentence_usage_db_manager.collection.delete(ids=[sentence_id])
-                sentence_category_db_manager.collection.delete(ids=[sentence_id])
-                image_db_manager.collection.delete(ids=[image_id])
+                if sentence_name_db_manager:
+                    sentence_name_db_manager.collection.delete(ids=[sentence_id])
+                if sentence_usage_db_manager:
+                    sentence_usage_db_manager.collection.delete(ids=[sentence_id])
+                if sentence_category_db_manager:
+                    sentence_category_db_manager.collection.delete(ids=[sentence_id])
+                if image_db_manager:
+                    image_db_manager.collection.delete(ids=[image_id])
             except Exception as cleanup_error:
-                print(f"⚠️ ChromaDB cleanup failed: {cleanup_error}")
+                pass
             
             return UploadResult(filename, False, "データベース挿入失敗", error_type="DatabaseInsertError", status_code=500)
 
         # 挿入された画像のMySQLのID（自動採番）を取得
+        id_retrieval_start = time.time()
         mysql_image_id_result, _ = select_image_id_by_clustering_id(connect_session, clustering_id)
         
         if not mysql_image_id_result:
             # 画像ID取得失敗（既に挿入されているのでロールバックは慎重に）
-            print(f"⚠️ 画像ID取得失敗: clustering_id={clustering_id}")
             return UploadResult(
                 filename, 
                 False, 
@@ -292,23 +372,32 @@ async def process_single_upload(
         
         mysql_image_id = mysql_image_id_result.mappings().first()["id"]
         
-        # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成
+        # プロジェクトメンバー全員のuser_image_clustering_statesレコードを作成（一括挿入で高速化）
+        members_start = time.time()
         members_result, _ = select_project_members(connect_session, project_id)
         
         if members_result:
             members = members_result.mappings().all()
-            for member in members:
-                user_id = member["user_id"]
+            user_ids = [member["user_id"] for member in members]
+            
+            if user_ids:
                 try:
-                    insert_user_image_state(connect_session, user_id=user_id, image_id=mysql_image_id, project_id=project_id, is_clustered=0)
+                    bulk_insert_start = time.time()
+                    bulk_insert_user_image_states(connect_session, user_ids=user_ids, image_id=mysql_image_id, project_id=project_id, is_clustered=0)
                 except Exception as state_error:
-                    print(f"⚠️ user_image_clustering_states挿入失敗 (user_id={user_id}, image_id={mysql_image_id}): {state_error}")
+                    # フォールバック: 個別挿入
+                    for user_id in user_ids:
+                        try:
+                            insert_user_image_state(connect_session, user_id=user_id, image_id=mysql_image_id, project_id=project_id, is_clustered=0)
+                        except Exception as fallback_error:
+                            pass
             
             # 初期クラスタリングが完了している全メンバーのcontinuous_clustering_stateを2（実行可能）に更新
             try:
+                state_update_start = time.time()
                 update_project_members_continuous_state(connect_session, project_id)
             except Exception as state_update_error:
-                print(f"⚠️ continuous_clustering_state更新失敗 (project_id={project_id}): {state_update_error}")
+                pass
         
         processing_time = round(time.time() - start_time, 2)
         return UploadResult(

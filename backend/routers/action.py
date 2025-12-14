@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import re
 import traceback
 from pathlib import Path
@@ -27,7 +28,8 @@ from config import (
     DEFAULT_OUTPUT_PATH,
     CAPTION_STOPWORDS,
     MAJOR_COLORS,
-    MAJOR_SHAPES
+    MAJOR_SHAPES,
+    TFIDF_SCORE_THRESHOLDS
 )
 from clustering.clustering_manager import ChromaDBManager, InitClusteringManager
 from clustering.mongo_db_manager import MongoDBManager
@@ -36,6 +38,7 @@ from clustering.chroma_db_manager import ChromaDBManager
 from clustering.embeddings_manager.image_embeddings_manager import ImageEmbeddingsManager
 from clustering.utils import Utils
 from clustering.word_analysis import WordAnalyzer
+from clustering.continuous_clustering_reporter import ContinuousClusteringReporter
 
 #分割したエンドポイントの作成
 #ログイン操作
@@ -522,6 +525,30 @@ def execute_continuous_clustering(
             print(f"   ユーザーID: {user_id}")
             print(f"   未クラスタリング画像数: {len(unclustered_rows)}")
             
+            # プロジェクト情報を取得（レポート用）
+            project_result, _ = action_queries.get_project_name(connect_session, project_id)
+            project_info = project_result.mappings().first() if project_result else None
+            project_name = project_info['name'] if project_info else f"project_{project_id}"
+            
+            # ユーザー情報を取得（レポート用）
+            user_result, _ = action_queries.get_user_info(connect_session, user_id)
+            user_info = user_result.mappings().first() if user_result else None
+            user_name = user_info['name'] if user_info else f"user_{user_id}"
+            
+            # レポーター初期化
+            reporter = ContinuousClusteringReporter(
+                project_name=project_name,
+                user_name=user_name,
+                output_base_dir=DEFAULT_OUTPUT_PATH
+            )
+            
+            # 実行時刻を記録
+            from datetime import datetime
+            execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 全画像のレポートデータを格納するリスト
+            all_reports_data = []
+            
             # ResultManagerとChromaDBManagerを初期化
             result_manager = ResultManager(mongo_result_id)
             # 文章埋め込みベクトルと画像埋め込みベクトルの両方を使用
@@ -606,6 +633,9 @@ def execute_continuous_clustering(
             print(f"\n📊 文章埋め込みベクトルを持つフォルダ数: {len(folder_sentence_embeddings)}")
             print(f"📊 画像埋め込みベクトルを持つフォルダ数: {len(folder_image_embeddings)}")
             
+            # 類似度閾値を定義（レポート生成でも使用）
+            SIMILARITY_THRESHOLD = 0.4  # 類似度閾値（調整可能）
+            
             # 各未クラスタリング画像を処理
             for idx, row in enumerate(unclustered_rows, 1):
                 try:
@@ -614,24 +644,53 @@ def execute_continuous_clustering(
                     clustering_id = row['clustering_id']
                     chromadb_sentence_id = row['chromadb_sentence_id']
                     chromadb_image_id = row['chromadb_image_id']
+                    caption = row.get('caption', '')
                     
                     print(f"\n  [{idx}/{len(unclustered_rows)}] 処理中: {image_name} (ID: {image_id})")
+                    
+                    # レポートデータを初期化
+                    report_data = {
+                        'execution_time': execution_time,
+                        'project_name': project_name,
+                        'user_name': user_name,
+                        'clustering_count': new_count,
+                        'image_id': image_id,
+                        'image_name': image_name,
+                        'clustering_id': clustering_id,
+                        'chromadb_sentence_id': chromadb_sentence_id,
+                        'chromadb_image_id': chromadb_image_id,
+                        'caption': caption,
+                        'sentence_embedding_available': False,
+                        'image_embedding_available': False,
+                        'total_folders_checked': len(leaf_folders),
+                        'similarity_scores': [],
+                        'errors': [],
+                        'new_folder_created': False,
+                        'classification_criteria_used': False,
+                        'additional_info': {},
+                        'feature_analysis': {},
+                        'sibling_folders_info': {}
+                    }
                     
                     # ChromaDBから文章の埋め込みベクトルを取得
                     new_sentence_embedding = None
                     try:
                         new_sentence_data = sentence_name_db.get_data_by_ids([chromadb_sentence_id])
                         new_sentence_embedding = new_sentence_data['embeddings'][0]
+                        report_data['sentence_embedding_available'] = True
                     except Exception as e:
                         print(f"    ⚠️ 文章埋め込みベクトル取得エラー: {e}")
+                        report_data['errors'].append(f"文章埋め込みベクトル取得エラー: {str(e)}")
                     
                     # ChromaDBから画像の埋め込みベクトルを取得
                     new_image_embedding = None
                     try:
                         new_image_data = image_db.get_data_by_ids([chromadb_image_id])
                         new_image_embedding = new_image_data['embeddings'][0]
+                        report_data['image_embedding_available'] = True
                     except Exception as e:
                         print(f"    ⚠️ 画像埋め込みベクトル取得エラー: {e}")
+                        report_data['errors'].append(f"画像埋め込みベクトル取得エラー: {str(e)}")
                     
                     # 両方のベクトルが取得できなかった場合はスキップ
                     if new_sentence_embedding is None and new_image_embedding is None:
@@ -642,6 +701,7 @@ def execute_continuous_clustering(
                     max_similarity = -1
                     best_folder_id = None
                     best_similarity_type = None  # 'sentence' or 'image'
+                    all_similarity_scores = []  # 全フォルダとの類似度を記録
                     
                     # 文章ベクトルで類似度計算
                     if new_sentence_embedding is not None:
@@ -650,6 +710,17 @@ def execute_continuous_clustering(
                                 [new_sentence_embedding],
                                 [folder_embedding]
                             )[0][0]
+                            
+                            # フォルダ名を取得
+                            folder_obj = next((f for f in leaf_folders if f['id'] == folder_id), None)
+                            folder_name = folder_obj['name'] if folder_obj else folder_id
+                            
+                            all_similarity_scores.append({
+                                'folder_id': folder_id,
+                                'folder_name': folder_name,
+                                'similarity': float(similarity),
+                                'type': 'sentence'
+                            })
                             
                             if similarity > max_similarity:
                                 max_similarity = similarity
@@ -664,10 +735,25 @@ def execute_continuous_clustering(
                                 [folder_embedding]
                             )[0][0]
                             
+                            # フォルダ名を取得
+                            folder_obj = next((f for f in leaf_folders if f['id'] == folder_id), None)
+                            folder_name = folder_obj['name'] if folder_obj else folder_id
+                            
+                            all_similarity_scores.append({
+                                'folder_id': folder_id,
+                                'folder_name': folder_name,
+                                'similarity': float(similarity),
+                                'type': 'image'
+                            })
+                            
                             if similarity > max_similarity:
                                 max_similarity = similarity
                                 best_folder_id = folder_id
                                 best_similarity_type = 'image'
+                    
+                    # 類似度スコアをソートしてレポートデータに保存
+                    all_similarity_scores.sort(key=lambda x: x['similarity'], reverse=True)
+                    report_data['similarity_scores'] = all_similarity_scores
                     
                     if best_folder_id is None:
                         print(f"    ⚠️ 適切なフォルダが見つかりませんでした")
@@ -676,7 +762,7 @@ def execute_continuous_clustering(
                     print(f"    📊 最高類似度: {max_similarity:.4f} (タイプ: {best_similarity_type})")
                     
                     # 類似度閾値チェック：閾値を下回る場合は新しいフォルダを作成
-                    SIMILARITY_THRESHOLD = 0.4  # 類似度閾値（調整可能）
+                    report_data['similarity_threshold'] = SIMILARITY_THRESHOLD
                     
                     if max_similarity < SIMILARITY_THRESHOLD:
                         print(f"    ⚠️ 最高類似度 {max_similarity:.4f} が閾値 {SIMILARITY_THRESHOLD} を下回っています")
@@ -721,6 +807,25 @@ def execute_continuous_clustering(
                             new_folder_id = create_result['folder_id']
                             print(f"    ✅ 新しいフォルダを作成しました: {new_folder_name} (ID: {new_folder_id})")
                             
+                            # レポートデータに新規フォルダ作成情報を記録
+                            report_data['new_folder_created'] = True
+                            report_data['new_folder_name'] = new_folder_name
+                            report_data['new_folder_id'] = new_folder_id
+                            report_data['final_folder_name'] = new_folder_name
+                            report_data['final_folder_id'] = new_folder_id
+                            report_data['final_similarity'] = max_similarity
+                            report_data['final_similarity_type'] = best_similarity_type
+                            
+                            # レポート生成
+                            try:
+                                reporter.generate_image_report(report_data)
+                            except Exception as report_e:
+                                print(f"    ⚠️ レポート生成エラー: {report_e}")
+                                traceback.print_exc()
+                            
+                            # レポートデータをリストに追加
+                            all_reports_data.append(report_data)
+                            
                             # user_image_clustering_statesを更新
                             _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)
                             
@@ -743,6 +848,7 @@ def execute_continuous_clustering(
                         else:
                             print(f"    ❌ フォルダ作成エラー: {create_result.get('error', 'Unknown error')}")
                             print(f"    → 既存のフォルダに配置を試みます")
+                            report_data['errors'].append(f"新規フォルダ作成失敗: {create_result.get('error', 'Unknown error')}")
                             # エラーの場合は既存フォルダへの配置処理に進む
                     
                     best_folder = next((f for f in leaf_folders if f['id'] == best_folder_id), None)
@@ -777,14 +883,10 @@ def execute_continuous_clustering(
                                         'is_leaf': node_data.get('is_leaf', False)
                                     })
                             
-                            print(f"    📂 同じ階層のフォルダ一覧 (count={len(sibling_folders)}):")
-                            for sib in sibling_folders:
-                                print(f"       - ID: {sib['id']}, Name: {sib['name']}, is_leaf: {sib['is_leaf']}")
+                            print(f"    📂 同階層フォルダ: {len(sibling_folders)}個")
                             
                             # --- is_leafフォルダのキャプション一覧を取得 ---
                             sibling_leaf_folders = [f for f in sibling_folders if f['is_leaf']]
-                            print(f"\n    📝 is_leafフォルダのキャプション収集開始 ({len(sibling_leaf_folders)}個のフォルダ)")
-                            
                             all_captions = []  # 全キャプションを格納
                             folder_captions_map = {}  # フォルダごとのキャプション
                             
@@ -818,33 +920,8 @@ def execute_continuous_clustering(
                                         'captions': folder_captions
                                     }
                             
-                            print(f"    ✅ 収集完了: 全{len(all_captions)}個のキャプション")
-                            
-                            # --- 頻出単語リストの作成 ---
-                            print(f"\n    📊 頻出単語分析開始...")
-                            
-                            from collections import Counter
-                            import re
-                            
-                            # 全キャプションから単語を抽出
-                            all_words = []
-                            for caption in all_captions:
-                                # 小文字化して単語に分割
-                                words = re.findall(r'\b[a-z]+\b', caption.lower())
-                                all_words.extend(words)
-                            
-                            # ストップワードを除外
+                            # ストップワードを準備
                             stopwords_set = set(CAPTION_STOPWORDS)
-                            filtered_words = [word for word in all_words if word not in stopwords_set]
-                            
-                            # 単語の出現回数をカウント
-                            word_counter = Counter(filtered_words)
-                            
-                            # 頻出順にソート（重複なし）
-                            frequent_words = word_counter.most_common()
-                            
-                            # --- 各フォルダの固有単語分析 ---
-                            print(f"\n    🔍 各フォルダの特徴的な単語を抽出中...")
                             
                             # 各フォルダの単語カウンターを作成（文の位置によるバイアス付き）
                             folder_word_counters = {}
@@ -885,37 +962,83 @@ def execute_continuous_clustering(
                                 
                                 folder_word_counters[sib_folder_id] = weighted_counter
                             
-                            # 各フォルダの特徴的な単語を抽出（TF-IDF風のスコアリング）
+                            # 各フォルダの特徴的な単語を抽出（改善版: フォルダ代表性スコア）
                             folder_unique_words = {}
                             TOP_N_UNIQUE_WORDS = 10  # 各フォルダから上位N個の特徴的な単語を抽出
                             
+                            # === グローバル統計の計算 ===
+                            num_folders = len(folder_word_counters)
+                            
+                            # 各単語が何個のフォルダに出現するか
+                            word_folder_count = {}
+                            # 各単語の全フォルダでの総出現回数
+                            word_total_count = {}
+                            
+                            for counter in folder_word_counters.values():
+                                for word, count in counter.items():
+                                    if word not in word_folder_count:
+                                        word_folder_count[word] = 0
+                                        word_total_count[word] = 0.0
+                                    word_folder_count[word] += 1
+                                    word_total_count[word] += count
+                            
+                            # === 各フォルダの単語スコアを計算 ===
                             for target_folder_id, target_counter in folder_word_counters.items():
-                                # 各単語のスコアを計算（重み付きカウント対応）
+                                # このフォルダの総画像数を取得
+                                folder_data_result = result_manager.get_folder_data_from_result(target_folder_id)
+                                total_images_in_folder = len(folder_data_result['data']) if folder_data_result['success'] else 1
+                                
+                                # このフォルダ内で単語を含む画像数をカウント（一貫性計算用）
+                                # 重み付きカウントではなく、純粋な画像数
+                                word_image_count = {}
+                                for caption in folder_captions_map[target_folder_id]['captions']:
+                                    words_in_caption = set(re.findall(r'\b[a-z]+\b', caption.lower())) - stopwords_set
+                                    for word in words_in_caption:
+                                        word_image_count[word] = word_image_count.get(word, 0) + 1
+                                
                                 word_scores = {}
                                 
                                 for word, count_in_target in target_counter.items():
-                                    # このフォルダでの重み付き出現回数
-                                    tf = count_in_target
+                                    # === 指標1: TF（Term Frequency）- 文位置重み付き ===
+                                    tf = count_in_target / max(total_images_in_folder, 1)
                                     
-                                    # 他のフォルダでの重み付き出現回数の合計
-                                    count_in_others = sum(
-                                        other_counter.get(word, 0.0) 
-                                        for other_id, other_counter in folder_word_counters.items() 
-                                        if other_id != target_folder_id
-                                    )
+                                    # === 指標2: フォルダ集中度（Concentration） ===
+                                    # この単語の全体出現のうち、このフォルダに何%集中しているか
+                                    concentration = count_in_target / max(word_total_count.get(word, 1), 0.001)
                                     
-                                    # スコア計算: (このフォルダでの重み付き出現回数) / (他のフォルダでの重み付き出現回数 + 1)
-                                    # +1は0除算を防ぐため
-                                    idf_like_score = tf / (count_in_others + 1.0)
+                                    # === 指標3: フォルダ内一貫性（Consistency） ===
+                                    # フォルダ内の何%の画像にこの単語が出現するか
+                                    num_images_with_word = word_image_count.get(word, 0)
+                                    consistency = num_images_with_word / max(total_images_in_folder, 1)
                                     
-                                    # 最終スコア: 重み付き出現回数 × IDF風スコア
-                                    final_score = tf * idf_like_score
+                                    # === 指標4: グローバル希少性（IDF） ===
+                                    num_folders_with_word = word_folder_count.get(word, 1)
+                                    base_idf = math.log((num_folders + 1) / (num_folders_with_word + 1))
+                                    
+                                    # === 代表性スコア（Representativeness Score） ===
+                                    # フォルダの内容を表す単語
+                                    score_repr = tf * concentration * (consistency ** 0.5) * 1000
+                                    
+                                    # === 識別性スコア（Distinctiveness Score） ===
+                                    # 他フォルダと区別する単語
+                                    score_dist = tf * base_idf * concentration * 100
+                                    
+                                    # === 最終スコア: 代表性70% + 識別性30% ===
+                                    final_score = 0.7 * score_repr + 0.3 * score_dist
                                     
                                     word_scores[word] = {
                                         'score': final_score,
-                                        'count_in_folder': tf,
-                                        'count_in_others': count_in_others,
-                                        'ratio': idf_like_score
+                                        'score_repr': score_repr,
+                                        'score_dist': score_dist,
+                                        'tf': tf,
+                                        'concentration': concentration,
+                                        'consistency': consistency,
+                                        'base_idf': base_idf,
+                                        'count_in_folder': count_in_target,
+                                        'num_images_with_word': num_images_with_word,
+                                        'num_folders_with_word': num_folders_with_word,
+                                        'total_count_all_folders': word_total_count.get(word, 0),
+                                        'total_images': total_images_in_folder
                                     }
                                 
                                 # スコア順にソート
@@ -934,16 +1057,21 @@ def execute_continuous_clustering(
                                         {
                                             'word': word,
                                             'score': round(info['score'], 2),
+                                            'score_repr': round(info['score_repr'], 2),
+                                            'score_dist': round(info['score_dist'], 2),
+                                            'tf': round(info['tf'], 4),
+                                            'concentration': round(info['concentration'], 4),
+                                            'consistency': round(info['consistency'], 4),
+                                            'base_idf': round(info['base_idf'], 4),
                                             'count_in_folder': info['count_in_folder'],
-                                            'count_in_others': info['count_in_others'],
-                                            'ratio': round(info['ratio'], 2)
+                                            'num_images_with_word': info['num_images_with_word'],
+                                            'num_folders_with_word': info['num_folders_with_word'],
+                                            'total_count_all_folders': info['total_count_all_folders'],
+                                            'total_images': info['total_images']
                                         }
                                         for word, info in top_unique
                                     ]
                                 }
-                            
-                            # --- フォルダ間の共通カテゴリ分析 ---
-                            print(f"\n    🔍 フォルダ間の共通カテゴリ分析を開始...")
                             
                             # 各フォルダから上位10個の特徴的単語を取得
                             folder_top_words_list = {}
@@ -958,36 +1086,22 @@ def execute_continuous_clustering(
                                 # 全フォルダに共通する単語を取得
                                 common_to_all_folders = set.intersection(*folder_word_sets) if len(folder_word_sets) > 1 else set()
                                 
-                                print(f"\n    🔍 全フォルダに共通する単語を除外...")
-                                print(f"       - 全フォルダ数: {len(folder_word_sets)}")
-                                print(f"       - 全フォルダに共通する単語数: {len(common_to_all_folders)}")
-                                
                                 if len(common_to_all_folders) > 0:
-                                    common_words_display = ', '.join(sorted(list(common_to_all_folders)))
-                                    print(f"       - 共通単語: {common_words_display}")
+                                    print(f"\n    🔍 全フォルダ共通単語: {len(common_to_all_folders)}個を除外")
                                     
                                     # 各フォルダのトップ10単語から共通単語を除外
                                     for folder_id in folder_top_words_list.keys():
-                                        original_count = len(folder_top_words_list[folder_id])
                                         folder_top_words_list[folder_id] = [
                                             w for w in folder_top_words_list[folder_id] 
                                             if w not in common_to_all_folders
                                         ]
-                                        removed_count = original_count - len(folder_top_words_list[folder_id])
-                                        if removed_count > 0:
-                                            folder_name = folder_unique_words[folder_id]['folder_name']
-                                            print(f"       - 📁 {folder_name}: {removed_count}個の共通単語を除外")
-                                else:
-                                    print(f"       ℹ️ 全フォルダに共通する単語はありません")
                             
                             # WordAnalyzerを初期化（既存のWordNetメソッドを使用）
                             from sentence_transformers import SentenceTransformer
                             embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
                             word_analyzer = WordAnalyzer(embedding_model)
                             
-                            # --- 新しいロジック: 全フォルダで同じカテゴリを持つ単語のみを抽出 ---
-                            print(f"\n    🔍 全フォルダ間で共通するカテゴリの単語を分析...")
-                            
+                            # --- 全フォルダで同じカテゴリを持つ単語のみを抽出 ---
                             folder_ids_list = list(folder_unique_words.keys())
                             
                             # 各単語がどのカテゴリに属するかをフォルダごとに分析
@@ -1020,13 +1134,11 @@ def execute_continuous_clustering(
                                         folder_word_categories[folder_id][word] = word_category_info
                             
                             # 全フォルダで共通して出現するカテゴリを特定
-                            print(f"\n    🔍 全フォルダで共通するカテゴリを特定中...")
-                            
                             from collections import defaultdict
                             category_occurrence = defaultdict(lambda: {
                                 'folders': set(),
-                                'words_by_folder': defaultdict(list),  # {folder_id: [(word, avg_score)]}
-                                'word_category_scores': defaultdict(list)  # {word: [scores]}
+                                'words_by_folder': defaultdict(list),
+                                'word_category_scores': defaultdict(list)
                             })
                             
                             # 各フォルダの各単語が属するカテゴリを集計
@@ -1060,10 +1172,9 @@ def execute_continuous_clustering(
                             
                             for category, info in category_occurrence.items():
                                 if len(info['folders']) == num_folders:
-                                    # 全フォルダに出現するカテゴリ
                                     common_categories_across_all_folders[category] = info
                             
-                            print(f"       ✅ 全{num_folders}個のフォルダに共通するカテゴリ数: {len(common_categories_across_all_folders)}")
+                            print(f"\n    📊 共通カテゴリ: {len(common_categories_across_all_folders)}個")
                             
                             # 分類基準の推定
                             classification_criteria = {}
@@ -1096,23 +1207,7 @@ def execute_continuous_clustering(
                                 # 平均スコア順にソート
                                 sorted_categories.sort(key=lambda x: x[1]['avg_score'], reverse=True)
                                 
-                                print(f"\n    📋 推定される分類基準（全フォルダ共通カテゴリ）:")
-                                
-                                for rank, (category, info) in enumerate(sorted_categories[:10], 1):
-                                    words_display = ', '.join([f"{w}({s:.2f})" for w, s in info['words_with_scores'][:5]])
-                                    folders_list = sorted([folder_unique_words[fid]['folder_name'] for fid in info['folders']])
-                                    
-                                    # 各フォルダでこのカテゴリに属する単語を表示
-                                    folder_words_display = []
-                                    for fid in info['folders']:
-                                        fname = folder_unique_words[fid]['folder_name']
-                                        # このフォルダでこのカテゴリに属する単語
-                                        fwords = [w for w, s in info['words_with_scores'] if any(
-                                            w == fw[0] for fw in common_categories_across_all_folders[category]['words_by_folder'].get(fid, [])
-                                        )]
-                                        if len(fwords) > 0:
-                                            folder_words_display.append(f"{fname}:{fwords[0]}")
-                                    
+                                for rank, (category, info) in enumerate(sorted_categories[:5], 1):
                                     classification_criteria[category] = {
                                         'rank': rank,
                                         'category': category,
@@ -1120,27 +1215,12 @@ def execute_continuous_clustering(
                                         'words_with_scores': info['words_with_scores'],
                                         'word_count': info['word_count'],
                                         'avg_score': round(info['avg_score'], 2),
-                                        'folders': folders_list,
-                                        'folder_words': folder_words_display
+                                        'folders': sorted([folder_unique_words[fid]['folder_name'] for fid in info['folders']])
                                     }
-                                    
-                                    print(f"\n       {rank}. カテゴリ: {category}")
-                                    print(f"          - 平均スコア: {info['avg_score']:.2f}")
-                                    print(f"          - 単語数: {info['word_count']}")
-                                    print(f"          - 全フォルダ数: {len(info['folders'])}")
-                                    print(f"          - 該当単語 (スコア順上位5): {words_display}")
-                                    print(f"          - フォルダ別単語: {', '.join(folder_words_display[:5])}")
                                 
                                 # 最も支配的なカテゴリを分類基準として特定
                                 if len(sorted_categories) > 0:
                                     top_category = sorted_categories[0][0]
-                                    top_info = sorted_categories[0][1]
-                                    top_words = ', '.join([w for w, s in top_info['words_with_scores'][:5]])
-                                    
-                                    print(f"\n    🎯 最も可能性の高い分類基準:")
-                                    print(f"       カテゴリ: {top_category}")
-                                    print(f"       平均スコア: {top_info['avg_score']:.2f}")
-                                    print(f"       該当単語: {top_words}")
                                     
                             else:
                                 print(f"       ⚠️ 全フォルダに共通するカテゴリが見つかりませんでした")
@@ -1149,83 +1229,28 @@ def execute_continuous_clustering(
                             debug_output = {
                                 'summary': {
                                     'total_captions': len(all_captions),
-                                    'total_words_before_filtering': len(all_words),
-                                    'total_words_after_filtering': len(filtered_words),
-                                    'unique_words': len(word_counter),
                                     'sibling_leaf_folder_count': len(sibling_leaf_folders),
-                                    'common_to_all_folders_count': len(common_to_all_folders) if 'common_to_all_folders' in locals() else 0,
                                     'common_categories_count': len(common_categories_across_all_folders) if 'common_categories_across_all_folders' in locals() else 0,
                                     'classification_criteria_count': len(classification_criteria)
                                 },
-                                'common_to_all_folders': sorted(list(common_to_all_folders)) if 'common_to_all_folders' in locals() else [],
-                                'common_categories_across_all_folders': {
-                                    cat: {
-                                        'words': [w for w, s in info['words_with_scores']] if 'words_with_scores' in info else [],
-                                        'avg_score': info.get('avg_score', 0.0),
-                                        'folders': list(info.get('folders', []))
-                                    }
-                                    for cat, info in (dict(sorted_categories) if 'sorted_categories' in locals() and sorted_categories else {}).items()
-                                } if 'sorted_categories' in locals() else {},
                                 'classification_criteria': classification_criteria,
-                                'folder_captions': folder_captions_map,
-                                'frequent_words': [
-                                    {
-                                        'word': word,
-                                        'count': count,
-                                        'rank': idx + 1
-                                    }
-                                    for idx, (word, count) in enumerate(frequent_words)
-                                ],
-                                'top_20_words': [
-                                    {
-                                        'word': word,
-                                        'count': count
-                                    }
-                                    for word, count in frequent_words[:20]
-                                ],
                                 'folder_unique_words': folder_unique_words
                             }
                             
-                            # JSON形式で出力
-                            import json
-                            from datetime import datetime
-                            
-                            # JSONファイルに保存
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            json_filename = f"sibling_captions_analysis_{timestamp}.json"
-                            json_filepath = os.path.join("./", json_filename)
-                            
-                            try:
-                                with open(json_filepath, 'w', encoding='utf-8') as f:
-                                    json.dump(debug_output, f, indent=2, ensure_ascii=False)
-                                print(f"\n    💾 JSONファイルに保存しました: {json_filepath}")
-                            except Exception as json_e:
-                                print(f"    ⚠️ JSONファイル保存エラー: {json_e}")
-                            
-                            # コンソールにも出力（簡易版）
-                            print(f"\n    📋 デバッグ用JSON出力サマリー:")
-                            print(f"       - 総キャプション数: {debug_output['summary']['total_captions']}")
-                            print(f"       - ユニークな単語数: {debug_output['summary']['unique_words']}")
-                            print(f"       - フォルダ数: {debug_output['summary']['sibling_leaf_folder_count']}")
-                            
-                            print(f"\n    🔝 Top 20 頻出単語:")
-                            for idx, (word, count) in enumerate(frequent_words[:20], 1):
-                                print(f"       {idx:2d}. {word:20s} : {count:4d}回")
-                            
-                            print(f"\n    🎯 各フォルダの特徴的な単語 (Top {TOP_N_UNIQUE_WORDS}):")
-                            for folder_id, unique_info in folder_unique_words.items():
-                                folder_name = unique_info['folder_name']
-                                print(f"\n       📁 {folder_name} (ID: {folder_id}):")
-                                for rank, word_info in enumerate(unique_info['unique_words'], 1):
-                                    print(f"          {rank:2d}. {word_info['word']:20s} | "
-                                          f"スコア: {word_info['score']:6.2f} | "
-                                          f"このフォルダ: {word_info['count_in_folder']:6.2f}回 | "
-                                          f"他フォルダ: {word_info['count_in_others']:6.2f}回 | "
-                                          f"比率: {word_info['ratio']:5.2f}")
-                            
-                            
-                            # --- 分類基準を使った新規画像の振り分けロジック ---
-                            print(f"\n    🔍 分類基準を使った振り分けロジックを開始...")
+                            # JSON形式で出力（デバッグ用 - コメントアウト）
+                            # import json
+                            # from datetime import datetime
+                            # 
+                            # # JSONファイルに保存
+                            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            # json_filename = f"sibling_captions_analysis_{timestamp}.json"
+                            # json_filepath = os.path.join("./", json_filename)
+                            # 
+                            # try:
+                            #     with open(json_filepath, 'w', encoding='utf-8') as f:
+                            #         json.dump(debug_output, f, indent=2, ensure_ascii=False)
+                            # except Exception as json_e:
+                            #     print(f"    ⚠️ JSON保存エラー: {json_e}")
                             
                             # 新規画像のキャプションを取得
                             try:
@@ -1237,8 +1262,6 @@ def execute_continuous_clustering(
                                         new_image_caption = caption_row['caption'].lower()
                                 
                                 if new_image_caption:
-                                    print(f"       📝 新規画像のキャプション: {new_image_caption[:100]}...")
-                                    
                                     # 分類基準から最上位カテゴリのみを使用
                                     if len(classification_criteria) > 0:
                                         # rankでソート（すでにrankがついている）
@@ -1251,151 +1274,307 @@ def execute_continuous_clustering(
                                         top_category, top_info = sorted_criteria[0]
                                         top_category_words_with_scores = top_info.get('words_with_scores', [])
                                         
-                                        print(f"\n       🎯 分類基準カテゴリ: {top_category}")
-                                        print(f"          該当単語: {', '.join([f'{w}({s:.2f})' for w, s in top_category_words_with_scores[:5]])}")
-                                        
                                         # 新規画像のキャプションから単語を抽出
                                         new_image_words = set(re.findall(r'\b[a-z]+\b', new_image_caption))
                                         # ストップワードを除外
                                         new_image_words = new_image_words - stopwords_set
                                         
-                                        # このカテゴリの単語リスト
-                                        top_category_words = set([w for w, s in top_category_words_with_scores])
-                                        
-                                        # キャプション内に分類基準単語が含まれているか確認（完全一致）
-                                        found_exact_words = new_image_words & top_category_words
-                                        
-                                        # WordNetを使ってこのカテゴリに属する単語を探す
-                                        category_matched_words = []  # [(word, avg_score)]
-                                        
                                         # 除外する単語セット: ストップワード + 全フォルダ共通単語
                                         exclude_words_for_matching = stopwords_set.copy()
+                                        common_words_count = 0
                                         if 'common_to_all_folders' in locals() and len(common_to_all_folders) > 0:
                                             exclude_words_for_matching.update(common_to_all_folders)
+                                            common_words_count = len(common_to_all_folders)
                                         
-                                        for new_word in new_image_words:
-                                            if new_word in top_category_words:
-                                                # すでに完全一致で見つかっている
+                                        # Step 0: 高スコア単語による即座のフォルダ決定
+                                        high_score_matches = []
+                                        
+                                        # 画像類似度と文章類似度の閾値設定
+                                        IMAGE_SIMILARITY_THRESHOLD = 0.85
+                                        SENTENCE_SIMILARITY_THRESHOLD = 0.75
+                                        
+                                        # 各フォルダの高スコア単語（閾値以上）をチェック
+                                        for sib_folder in sibling_leaf_folders:
+                                            sib_folder_id = sib_folder['id']
+                                            sib_folder_name = sib_folder['name']
+                                            
+                                            if sib_folder_id not in folder_unique_words:
                                                 continue
                                             
-                                            # 除外単語リストに含まれていればスキップ
-                                            if new_word in exclude_words_for_matching:
+                                            folder_high_score_words = []
+                                            # このフォルダの高スコア単語を抽出
+                                            for w_info in folder_unique_words[sib_folder_id]['unique_words']:
+                                                if w_info['score'] >= TFIDF_SCORE_THRESHOLDS['high']:
+                                                    folder_high_score_words.append(w_info)
+                                            
+                                            if len(folder_high_score_words) == 0:
                                                 continue
                                             
-                                            # 新規単語がこのカテゴリに属するかチェック
-                                            scores_for_word = []
-                                            for category_word, cat_word_score in top_category_words_with_scores:
-                                                common_categories, category_score = word_analyzer.get_common_category(new_word, category_word)
+                                            # キャプション内の単語と照合
+                                            matched_high_score_words = []
+                                            for w_info in folder_high_score_words:
+                                                if w_info['word'] in new_image_words and w_info['word'] not in exclude_words_for_matching:
+                                                    matched_high_score_words.append(w_info)
+                                            
+                                            if len(matched_high_score_words) > 0:
+                                                # 最高スコアの単語を選択
+                                                best_match = max(matched_high_score_words, key=lambda x: x['score'])
                                                 
-                                                # 最上位の共通カテゴリがtop_categoryと一致するかチェック
-                                                if len(common_categories) > 0 and common_categories[0] == top_category and category_score >= 3.0:
-                                                    scores_for_word.append(category_score)
-                                                    print(f"       🔗 '{new_word}' は '{category_word}' と同じカテゴリ '{top_category}' (スコア: {category_score:.2f})")
-                                            
-                                            if len(scores_for_word) > 0:
-                                                # この単語のカテゴリとの平均スコアを計算
-                                                avg_score = sum(scores_for_word) / len(scores_for_word)
-                                                category_matched_words.append((new_word, avg_score))
-                                        
-                                        # スコア順にソート
-                                        category_matched_words.sort(key=lambda x: x[1], reverse=True)
-                                        
-                                        if len(found_exact_words) > 0:
-                                            print(f"\n       ✅ キャプション内に分類基準単語を発見（完全一致）: {', '.join(found_exact_words)}")
-                                        
-                                        if len(category_matched_words) > 0:
-                                            print(f"\n       🔍 キャプション内に分類基準カテゴリ '{top_category}' に属する単語を発見:")
-                                            top_matched = [f"{w}({s:.2f})" for w, s in category_matched_words[:5]]
-                                            print(f"          {', '.join(top_matched)}")
-                                        
-                                        # 完全一致 + カテゴリマッチを統合
-                                        all_found_words = found_exact_words.copy()
-                                        for word, score in category_matched_words:
-                                            all_found_words.add(word)
-                                        
-                                        if len(all_found_words) > 0:
-                                            print(f"\n       📂 既存の兄弟フォルダと照合します...")
-                                            
-                                            # 候補フォルダをスコア付きで格納
-                                            folder_candidates = []
-                                            
-                                            # まず完全一致の単語を優先してチェック
-                                            for word in found_exact_words:
-                                                for sib_folder in sibling_leaf_folders:
-                                                    sib_folder_name = sib_folder['name'].lower()
-                                                    
-                                                    # 完全一致: フォルダ名 == 単語 または フォルダ名に単語が含まれる
-                                                    if sib_folder_name == word or word in sib_folder_name.split(','):
-                                                        # このフォルダのTF-IDFスコアを取得
-                                                        folder_score = 0.0
-                                                        if sib_folder['id'] in folder_unique_words:
-                                                            for w_info in folder_unique_words[sib_folder['id']]['unique_words']:
-                                                                if w_info['word'] == word:
-                                                                    folder_score = w_info['score']
-                                                                    break
+                                                # フォルダ内のclustering_idを取得
+                                                folder_data_result = result_manager.get_folder_data_from_result(sib_folder_id)
+                                                if not folder_data_result['success']:
+                                                    print(f"             ⚠️ フォルダデータ取得失敗")
+                                                    continue
+                                                
+                                                folder_data = folder_data_result['data']
+                                                clustering_ids_in_folder = list(folder_data.keys())
+                                                
+                                                # 各画像との類似度を計算
+                                                image_similarities = []
+                                                for cid in clustering_ids_in_folder:
+                                                    try:
+                                                        # clustering_idから画像IDと文章IDを取得
+                                                        img_result, _ = action_queries.get_chromadb_image_id_by_clustering_id(connect_session, cid, project_id)
+                                                        sent_result, _ = action_queries.get_chromadb_sentence_id_by_clustering_id(connect_session, cid, project_id)
                                                         
-                                                        folder_candidates.append({
-                                                            'folder': sib_folder,
-                                                            'word': word,
-                                                            'score': folder_score + 1000,  # 完全一致を優先
-                                                            'match_type': 'exact'
+                                                        if not img_result or not sent_result:
+                                                            continue
+                                                        
+                                                        img_mapping = img_result.mappings().first()
+                                                        sent_mapping = sent_result.mappings().first()
+                                                        
+                                                        if not img_mapping or not sent_mapping:
+                                                            continue
+                                                        
+                                                        folder_image_id = img_mapping['chromadb_image_id']
+                                                        folder_sentence_id = sent_mapping['chromadb_sentence_id']
+                                                        
+                                                        # 画像埋め込みベクトルを取得
+                                                        folder_img_data = image_db.get_data_by_ids([folder_image_id])
+                                                        folder_img_embedding = folder_img_data['embeddings'][0] if folder_img_data['embeddings'] else None
+                                                        
+                                                        # 文章埋め込みベクトルを取得
+                                                        folder_sent_data = sentence_name_db.get_data_by_ids([folder_sentence_id])
+                                                        folder_sent_embedding = folder_sent_data['embeddings'][0] if folder_sent_data['embeddings'] else None
+                                                        
+                                                        if folder_img_embedding is None or folder_sent_embedding is None:
+                                                            continue
+                                                        
+                                                        if new_image_embedding is None or new_sentence_embedding is None:
+                                                            continue
+                                                        
+                                                        # 画像類似度を計算
+                                                        img_sim = float(np.dot(new_image_embedding, folder_img_embedding) / (
+                                                            np.linalg.norm(new_image_embedding) * np.linalg.norm(folder_img_embedding)
+                                                        ))
+                                                        
+                                                        # 文章類似度を計算
+                                                        sent_sim = float(np.dot(new_sentence_embedding, folder_sent_embedding) / (
+                                                            np.linalg.norm(new_sentence_embedding) * np.linalg.norm(folder_sent_embedding)
+                                                        ))
+                                                        
+                                                        image_similarities.append({
+                                                            'clustering_id': cid,
+                                                            'image_similarity': img_sim,
+                                                            'sentence_similarity': sent_sim
                                                         })
-                                                        print(f"       🎯 候補フォルダ発見（完全一致）: '{word}' → '{sib_folder['name']}' (スコア: {folder_score:.2f})")
-                                            
-                                            # 完全一致候補がなければ、カテゴリマッチ単語をチェック
-                                            if len(folder_candidates) == 0:
-                                                # カテゴリに最も近い単語を優先（スコア順にソート済み）
-                                                for word, word_category_score in category_matched_words:
-                                                    for sib_folder in sibling_leaf_folders:
-                                                        sib_folder_name = sib_folder['name'].lower()
-                                                        if sib_folder_name == word or word in sib_folder_name.split(','):
-                                                            folder_score = 0.0
-                                                            if sib_folder['id'] in folder_unique_words:
-                                                                for w_info in folder_unique_words[sib_folder['id']]['unique_words']:
-                                                                    if w_info['word'] == word:
-                                                                        folder_score = w_info['score']
-                                                                        break
-                                                            
-                                                            # カテゴリスコアとフォルダスコアを組み合わせて評価
-                                                            combined_score = folder_score + (word_category_score * 0.1)
-                                                            
-                                                            folder_candidates.append({
-                                                                'folder': sib_folder,
-                                                                'word': word,
-                                                                'score': combined_score,
-                                                                'match_type': 'category',
-                                                                'category_score': word_category_score
-                                                            })
-                                                            print(f"       🎯 候補フォルダ発見（カテゴリ一致）: '{word}' (カテゴリスコア: {word_category_score:.2f}) → '{sib_folder['name']}' (総合スコア: {combined_score:.2f})")
-                                            
-                                            # 候補から最適なフォルダを選択
-                                            matched_folder = None
-                                            matched_word = None
-                                            
-                                            if len(folder_candidates) > 0:
-                                                # スコアが高い順にソート
-                                                folder_candidates.sort(key=lambda x: x['score'], reverse=True)
-                                                best_candidate = folder_candidates[0]
-                                                matched_folder = best_candidate['folder']
-                                                matched_word = best_candidate['word']
+                                                        
+                                                    except Exception as sim_e:
+                                                        continue
                                                 
-                                                print(f"       ⭐ 最適フォルダを選択: '{matched_word}' → '{matched_folder['name']}' (スコア: {best_candidate['score']:.2f}, タイプ: {best_candidate['match_type']})")
-                                            
-                                            if matched_folder:
-                                                # 既存フォルダに挿入
-                                                target_folder_id_by_criteria = matched_folder['id']
-                                                print(f"       📂 既存フォルダへ挿入予定: {matched_folder['name']} (ID: {target_folder_id_by_criteria})")
+                                                # 画像類似度でソート（降順）
+                                                image_similarities.sort(key=lambda x: x['image_similarity'], reverse=True)
+                                                
+                                                # 画像類似度が高い順に、両方の閾値をクリアするものを探す
+                                                best_matching_image = None
+                                                for sim_info in image_similarities:
+                                                    if (sim_info['image_similarity'] >= IMAGE_SIMILARITY_THRESHOLD and 
+                                                        sim_info['sentence_similarity'] >= SENTENCE_SIMILARITY_THRESHOLD):
+                                                        best_matching_image = sim_info
+                                                        break
+                                                
+                                                # 両方の閾値をクリアする画像が見つかった場合のみ、このフォルダをマッチ候補に追加
+                                                if best_matching_image is not None:
+                                                    high_score_matches.append({
+                                                        'folder': sib_folder,
+                                                        'matched_words': matched_high_score_words,
+                                                        'best_word': best_match['word'],
+                                                        'best_score': best_match['score'],
+                                                        'image_similarity': best_matching_image['image_similarity'],
+                                                        'sentence_similarity': best_matching_image['sentence_similarity'],
+                                                        'matching_clustering_id': best_matching_image['clustering_id']
+                                                    })
+                                        
+                                        # 高スコアマッチが見つかった場合、即座にフォルダを決定
+                                        if len(high_score_matches) > 0:
+                                            # 複数マッチがある場合の選択ロジック
+                                            if len(high_score_matches) == 1:
+                                                best_match = high_score_matches[0]
                                             else:
-                                                # 新規フォルダ作成（完全一致を優先、なければカテゴリマッチで最もスコアの高い単語を使用）
-                                                new_folder_word = None
-                                                if len(found_exact_words) > 0:
-                                                    new_folder_word = list(found_exact_words)[0]
-                                                else:
-                                                    # カテゴリマッチから最もカテゴリに近い単語を取得（最高スコア）
-                                                    if len(category_matched_words) > 0:
-                                                        new_folder_word = category_matched_words[0][0]  # 最高スコアの単語
+                                                # 複数ある場合、画像類似度が最も高いものを選択
+                                                best_match = max(high_score_matches, key=lambda x: x['image_similarity'])
+                                            
+                                            print(f"\n       ⭐ Step 0: 高スコアマッチ '{best_match['best_word']}' → '{best_match['folder']['name']}'")
+                                            
+                                            # 既存フォルダに挿入
+                                            target_folder_id_by_criteria = best_match['folder']['id']
+                                        
+                                        # 高スコアマッチがない場合のみ、従来のカテゴリマッチングを実行
+                                        if len(high_score_matches) == 0:
+                                        
+                                            # Step 1: 新規画像のキャプション内の単語から、分類基準カテゴリ(top_category)に属する単語をフィルタリング
+                                            category_words_in_caption = []
+                                            excluded_by_filter = []
+                                            checked_but_not_matched = []
+                                            word_matching_details = []
+                                            for new_word in sorted(list(new_image_words)):
+                                                if new_word in exclude_words_for_matching:
+                                                    excluded_by_filter.append(new_word)
+                                                    continue
                                                 
-                                                if new_folder_word:
+                                                max_score_for_word = -1
+                                                belongs_to_category = False
+                                                best_match_word = None
+                                                match_details = []
+                                                
+                                                for category_word, cat_word_score in top_category_words_with_scores:
+                                                    common_categories, category_score = word_analyzer.get_common_category(new_word, category_word)
+                                                    
+                                                    if len(common_categories) > 0:
+                                                        match_details.append({
+                                                            'category_word': category_word,
+                                                            'common_categories': common_categories,
+                                                            'category_score': category_score,
+                                                            'matched': common_categories[0] == top_category and category_score >= 3.0
+                                                        })
+                                                    
+                                                    if len(common_categories) > 0 and common_categories[0] == top_category and category_score >= 3.0:
+                                                        belongs_to_category = True
+                                                        if category_score > max_score_for_word:
+                                                            max_score_for_word = category_score
+                                                            best_match_word = category_word
+                                                
+                                                word_matching_details.append({
+                                                    'word': new_word,
+                                                    'matched': belongs_to_category,
+                                                    'max_score': max_score_for_word,
+                                                    'best_match_word': best_match_word,
+                                                    'match_details': match_details
+                                                })
+                                                
+                                                if belongs_to_category:
+                                                    category_words_in_caption.append((new_word, max_score_for_word))
+                                                else:
+                                                    checked_but_not_matched.append(new_word)
+                                            
+                                            # スコア順にソート
+                                            category_words_in_caption.sort(key=lambda x: x[1], reverse=True)
+                                            
+                                            print(f"\n       ⭐ Step 1: {len(category_words_in_caption)}個のカテゴリ単語を抽出")
+                                            
+                                            if len(category_words_in_caption) == 0:
+                                                print(f"       ⚠️ カテゴリ '{top_category}' に属する単語が見つかりませんでした")
+                                            
+                                            # Step 2: フィルタリングした単語と既存フォルダの特徴的な単語を照合
+                                            if len(category_words_in_caption) > 0:
+                                                print(f"\n       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                print(f"       🔍 Step 2: 既存フォルダの特徴的な単語と照合...")
+                                                print(f"          📋 照合対象の単語: {[w for w, s in category_words_in_caption]}")
+                                                print(f"          📂 照合対象のフォルダ数: {len(sibling_leaf_folders)}個")
+                                                print(f"\n       🔎 フォルダ照合の詳細:")
+                                                
+                                                folder_candidates = []
+                                                words_checked_count = {}
+                                                folders_checked_for_word = {}
+                                                
+                                                # フィルタリングした各単語について、既存フォルダの特徴的な単語に含まれるか確認
+                                                for new_word, word_category_score in category_words_in_caption:
+                                                    words_checked_count[new_word] = 0
+                                                    folders_checked_for_word[new_word] = []
+                                                    print(f"\n          🔍 '{new_word}' を各フォルダの特徴的単語と照合中...")
+                                                    # 各兄弟フォルダの特徴的な単語リストをチェック
+                                                    for sib_folder in sibling_leaf_folders:
+                                                        sib_folder_id = sib_folder['id']
+                                                        sib_folder_name = sib_folder['name']
+                                                        words_checked_count[new_word] += 1
+                                                        
+                                                        # このフォルダの特徴的な単語を取得
+                                                        if sib_folder_id in folder_unique_words:
+                                                            folder_unique_list = folder_unique_words[sib_folder_id]['unique_words']
+                                                            folder_words_list = [w['word'] for w in folder_unique_list]
+                                                            folders_checked_for_word[new_word].append({
+                                                                'folder_name': sib_folder_name,
+                                                                'folder_id': sib_folder_id,
+                                                                'unique_words': folder_words_list[:5]  # 上位5個
+                                                            })
+                                                            
+                                                            # 特徴的な単語リストに含まれているか確認
+                                                            for w_info in folder_unique_list:
+                                                                if w_info['word'] == new_word:
+                                                                    # 一致した！
+                                                                    folder_tf_idf_score = w_info['score']
+                                                                    
+                                                                    # 総合スコア = フォルダのTF-IDFスコア + カテゴリスコア
+                                                                    combined_score = folder_tf_idf_score + (word_category_score * 0.1)
+                                                                    
+                                                                    folder_candidates.append({
+                                                                        'folder': sib_folder,
+                                                                        'word': new_word,
+                                                                        'folder_score': folder_tf_idf_score,
+                                                                        'category_score': word_category_score,
+                                                                        'combined_score': combined_score
+                                                                    })
+                                                                    
+                                                                    print(f"             ✅ マッチ！フォルダ '{sib_folder_name}'")
+                                                                    print(f"                └─ TF-IDF: {folder_tf_idf_score:.2f}, カテゴリ: {word_category_score:.2f}, 総合: {combined_score:.2f}")
+                                                                    break
+                                                    
+                                                    # この単語でマッチしなかったフォルダの情報を出力
+                                                    if words_checked_count[new_word] == len(sibling_leaf_folders) and len([c for c in folder_candidates if c['word'] == new_word]) == 0:
+                                                        print(f"             ❌ どのフォルダの特徴的単語にも含まれていません")
+                                                        print(f"             📊 確認したフォルダ: {words_checked_count[new_word]}個")
+                                                
+                                                print(f"\n       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                print(f"       📊 Step 2 結果サマリー:")
+                                                print(f"          🎯 マッチした候補数: {len(folder_candidates)}個")
+                                                if len(folder_candidates) > 0:
+                                                    print(f"          📋 候補リスト:")
+                                                    for idx, candidate in enumerate(sorted(folder_candidates, key=lambda x: x['combined_score'], reverse=True)[:5], 1):
+                                                        print(f"             {idx}. '{candidate['word']}' → '{candidate['folder']['name']}' (総合: {candidate['combined_score']:.2f})")
+                                                print(f"       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                
+                                                # Step 3: 候補から最適なフォルダを選択
+                                                print(f"\n       🎯 Step 3: 最適なフォルダを選択...")
+                                                matched_folder = None
+                                                matched_word = None
+                                                
+                                                if len(folder_candidates) > 0:
+                                                    # 総合スコアが高い順にソート
+                                                    folder_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
+                                                    best_candidate = folder_candidates[0]
+                                                    matched_folder = best_candidate['folder']
+                                                    matched_word = best_candidate['word']
+                                                    
+                                                    print(f"\n       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                    print(f"       ⭐ 最終決定:")
+                                                    print(f"          🎯 選択された単語: '{matched_word}'")
+                                                    print(f"          📂 挿入先フォルダ: '{matched_folder['name']}'")
+                                                    print(f"          📊 スコア詳細:")
+                                                    print(f"             - TF-IDFスコア: {best_candidate['folder_score']:.2f}")
+                                                    print(f"             - カテゴリスコア: {best_candidate['category_score']:.2f}")
+                                                    print(f"             - 総合スコア: {best_candidate['combined_score']:.2f}")
+                                                    print(f"          🔢 フォルダID: {matched_folder['id']}")
+                                                    print(f"       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                    
+                                                    # 既存フォルダに挿入
+                                                    target_folder_id_by_criteria = matched_folder['id']
+                                                
+                                                else:
+                                                    # 既存フォルダにマッチする単語が見つからなかった → 新規フォルダ作成
+                                                    # カテゴリに最も属する単語（最高スコア）を使用
+                                                    new_folder_word = category_words_in_caption[0][0]
+                                                    
+                                                    print(f"\n       ℹ️ 既存フォルダに一致する単語が見つかりませんでした")
                                                     print(f"       🆕 新規フォルダ作成予定: フォルダ名='{new_folder_word}'")
                                                     
                                                     # 親フォルダIDを取得（best_folderと同じ階層）
@@ -1413,43 +1592,34 @@ def execute_continuous_clustering(
                                                         initial_image_path=image_path_temp
                                                     )
                                                     
-                                                    if create_result['success']:
-                                                        new_folder_id = create_result['folder_id']
-                                                        target_folder_id_by_criteria = new_folder_id
-                                                        print(f"       ✅ 新規フォルダ作成成功: '{new_folder_word}' (ID: {new_folder_id})")
-                                                        
-                                                        # user_image_clustering_statesを更新
-                                                        _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)
-                                                        
-                                                        # 新しいフォルダの埋め込みベクトルを追加
-                                                        if new_sentence_embedding is not None:
-                                                            folder_sentence_embeddings[new_folder_id] = new_sentence_embedding
-                                                        if new_image_embedding is not None:
-                                                            folder_image_embeddings[new_folder_id] = new_image_embedding
-                                                        
-                                                        # leaf_foldersリストにも追加
-                                                        leaf_folders.append({
-                                                            'id': new_folder_id,
-                                                            'name': new_folder_word,
-                                                            'parent_id': parent_id_for_new,
-                                                            'is_leaf': True
+                                                if create_result['success']:
+                                                    new_folder_id = create_result['folder_id']
+                                                    target_folder_id_by_criteria = new_folder_id
+                                                    print(f"       ✅ 新規フォルダ作成成功: '{new_folder_word}' (ID: {new_folder_id})")
+                                                    
+                                                    # user_image_clustering_statesを更新
+                                                    _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)                                                    
+                                                    # 新しいフォルダの埋め込みベクトルを追加
+                                                    if new_sentence_embedding is not None:
+                                                        folder_sentence_embeddings[new_folder_id] = new_sentence_embedding
+                                                    if new_image_embedding is not None:
+                                                        folder_image_embeddings[new_folder_id] = new_image_embedding                                                    
+                                                    # leaf_foldersリストにも追加
+                                                    leaf_folders.append({
+                                                        'id': new_folder_id,
+                                                        'name': new_folder_word,
+                                                        'parent_id': parent_id_for_new,
+                                                        'is_leaf': True
+                                                    })
+                                                    
+                                                    # sibling_leaf_foldersにも追加
+                                                    sibling_leaf_folders.append({
+                                                        'id': new_folder_id,
+                                                        'name': new_folder_word,
+                                                        'parent_id': parent_id_for_new,
+                                                        'is_leaf': True
                                                         })
-                                                        
-                                                        # sibling_leaf_foldersにも追加
-                                                        sibling_leaf_folders.append({
-                                                            'id': new_folder_id,
-                                                            'name': new_folder_word,
-                                                            'parent_id': parent_id_for_new,
-                                                            'is_leaf': True
-                                                        })
-                                                        
-                                                        print(f"       ℹ️ 新規フォルダ作成により、後続の既存フォルダ挿入処理はスキップします")
-                                                        # 新規フォルダ作成が成功したので、後続の挿入処理をスキップ
-                                                        continue
-                                                    else:
-                                                        print(f"       ❌ 新規フォルダ作成失敗: {create_result.get('error', 'Unknown error')}")
-                                                        print(f"       → フォールバックとして最も類似したフォルダに挿入します")
-                                                        target_folder_id_by_criteria = None
+                                                    
                                                     print(f"       ℹ️ 新規フォルダ作成により、後続の既存フォルダ挿入処理はスキップします")
                                                     # 新規フォルダ作成が成功したので、後続の挿入処理をスキップ
                                                     continue
@@ -1457,16 +1627,23 @@ def execute_continuous_clustering(
                                                     print(f"       ❌ 新規フォルダ作成失敗: {create_result.get('error', 'Unknown error')}")
                                                     print(f"       → フォールバックとして最も類似したフォルダに挿入します")
                                                     target_folder_id_by_criteria = None
+                                            else:
+                                                print(f"       ℹ️ キャプション内に分類基準カテゴリに属する単語が含まれていません")
+                                                print(f"       → 最も類似したフォルダ（{folder_name}）に挿入します")
                                         else:
-                                            print(f"       ℹ️ キャプション内に分類基準単語が含まれていません")
+                                            print(f"       ℹ️ 分類基準が生成されていません")
                                             print(f"       → 最も類似したフォルダ（{folder_name}）に挿入します")
                                     else:
-                                        print(f"       ℹ️ 分類基準が生成されていません")
+                                        print(f"       ⚠️ 新規画像のキャプションが取得できませんでした")
                                         print(f"       → 最も類似したフォルダ（{folder_name}）に挿入します")
-                                else:
-                                    print(f"       ⚠️ 新規画像のキャプションが取得できませんでした")
-                                    print(f"       → 最も類似したフォルダ（{folder_name}）に挿入します")
-                            
+                                    
+                                    # レポートデータに兄弟フォルダのTF-IDFスコア表を追加
+                                    if 'folder_unique_words' in locals() and len(folder_unique_words) > 0:
+                                        report_data['sibling_folder_tfidf_scores'] = folder_unique_words
+                                        report_data['classification_criteria_process_executed'] = True
+                                        if 'classification_criteria' in locals():
+                                            report_data['classification_criteria_details'] = classification_criteria
+
                             except Exception as criteria_e:
                                 print(f"       ⚠️ 分類基準による振り分け処理でエラー: {criteria_e}")
                                 traceback.print_exc()
@@ -1480,6 +1657,40 @@ def execute_continuous_clustering(
                     
                     # 最終的な挿入先フォルダを決定
                     final_target_folder_id = target_folder_id_by_criteria if target_folder_id_by_criteria else best_folder_id
+                    
+                    # 最終フォルダ情報をレポートデータに記録
+                    final_folder_obj = next((f for f in leaf_folders if f['id'] == final_target_folder_id), None)
+                    final_folder_name = final_folder_obj['name'] if final_folder_obj else final_target_folder_id
+                    
+                    report_data['final_folder_id'] = final_target_folder_id
+                    report_data['final_folder_name'] = final_folder_name
+                    report_data['final_similarity'] = max_similarity
+                    report_data['final_similarity_type'] = best_similarity_type
+                    
+                    # 既存フォルダに追加する場合、フォルダ平均との類似度を計算
+                    try:
+                        # 文章特徴量の類似度
+                        if final_target_folder_id in folder_sentence_embeddings:
+                            folder_sent_vec = folder_sentence_embeddings[final_target_folder_id]
+                            new_image_sent_vec = sentence_result['embeddings'][0]
+                            sentence_similarity_with_folder = float(np.dot(folder_sent_vec, new_image_sent_vec) / 
+                                                                          (np.linalg.norm(folder_sent_vec) * np.linalg.norm(new_image_sent_vec)))
+                            report_data['folder_average_sentence_similarity'] = sentence_similarity_with_folder
+                            print(f"    📊 フォルダ平均との文章類似度: {sentence_similarity_with_folder:.4f}")
+                        
+                        # 画像特徴量の類似度
+                        if final_target_folder_id in folder_image_embeddings:
+                            folder_img_vec = folder_image_embeddings[final_target_folder_id]
+                            new_image_img_vec = image_result['embeddings'][0]
+                            image_similarity_with_folder = float(np.dot(folder_img_vec, new_image_img_vec) / 
+                                                                       (np.linalg.norm(folder_img_vec) * np.linalg.norm(new_image_img_vec)))
+                            report_data['folder_average_image_similarity'] = image_similarity_with_folder
+                            print(f"    📊 フォルダ平均との画像類似度: {image_similarity_with_folder:.4f}")
+                    except Exception as sim_calc_e:
+                        print(f"    ⚠️ フォルダ平均との類似度計算エラー: {sim_calc_e}")
+                    
+                    if target_folder_id_by_criteria:
+                        report_data['classification_criteria_used'] = True
                     
                     print(f"\n    📌 最終挿入先フォルダ: ID={final_target_folder_id}")
                     
@@ -1496,6 +1707,16 @@ def execute_continuous_clustering(
 
                     if insert_result['success']:
                         print(f"    ✅ フォルダに画像を挿入しました")
+                        
+                        # レポート生成
+                        try:
+                            reporter.generate_image_report(report_data)
+                        except Exception as report_e:
+                            print(f"    ⚠️ レポート生成エラー: {report_e}")
+                            traceback.print_exc()
+                        
+                        # レポートデータをリストに追加
+                        all_reports_data.append(report_data)
 
                         # user_image_clustering_statesを更新
                         _, _ = action_queries.update_user_image_state_for_image(connect_session, user_id, image_id, new_count)
@@ -1548,7 +1769,28 @@ def execute_continuous_clustering(
                         
                 except Exception as img_error:
                     print(f"    ❌ 画像処理中にエラー: {img_error}")
+                    traceback.print_exc()
                     continue
+            
+            # サマリーレポート生成
+            if len(all_reports_data) > 0:
+                try:
+                    print(f"\n📊 サマリーレポート生成中...")
+                    reporter.generate_summary_report(all_reports_data)
+                    print(f"✅ サマリーレポート生成完了")
+                    
+                    print(f"\n📊 評価指標レポート生成中...")
+                    # フォルダデータを取得
+                    all_nodes = result_manager.get_all_nodes()
+                    reporter.generate_metrics_report(
+                        all_reports_data,
+                        folder_data=all_nodes,
+                        similarity_threshold=SIMILARITY_THRESHOLD
+                    )
+                    print(f"✅ 評価指標レポート生成完了")
+                except Exception as summary_e:
+                    print(f"⚠️ レポート生成エラー: {summary_e}")
+                    traceback.print_exc()
             
             # project_membershipsのexecuted_clustering_countを更新
             _, _ = action_queries.update_project_executed_clustering_count(connect_session, user_id, project_id, new_count)
@@ -1677,6 +1919,172 @@ def move_clustering_items(
         content={"message": "success", "data": None}
     )
     
+
+@action_endpoint.post("/action/folders/{mongo_result_id}", tags=["action"], description="新しいフォルダを作成")
+def create_folder(
+    mongo_result_id: str,
+    parent_folder_id: str = Query(..., description="親フォルダのID"),
+    is_leaf: bool = Query(..., description="リーフフォルダかどうか（True: ファイル用, False: カテゴリ用）")
+):
+    """
+    指定された親フォルダの配下に新しいフォルダを作成する
+    
+    Args:
+        mongo_result_id: MongoDBの結果ID
+        parent_folder_id: 親フォルダのID
+        is_leaf: リーフフォルダかどうか（True: ファイル用, False: カテゴリ用）
+        
+    Returns:
+        JSONResponse: 作成されたフォルダの情報
+    """
+    try:
+        # 入力バリデーション
+        if not mongo_result_id or not mongo_result_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "mongo_result_id is required", "data": None}
+            )
+        
+        if not parent_folder_id or not parent_folder_id.strip():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "parent_folder_id is required", "data": None}
+            )
+        
+        print(f"📁 フォルダ作成リクエスト:")
+        print(f"   mongo_result_id: {mongo_result_id}")
+        print(f"   parent_folder_id: {parent_folder_id}")
+        print(f"   is_leaf: {is_leaf}")
+        
+        # ResultManagerを初期化
+        result_manager = ResultManager(mongo_result_id)
+        
+        # 新しいフォルダIDを生成
+        new_folder_id = Utils.generate_uuid()
+        
+        # フォルダ名をis_leafに応じて設定
+        folder_prefix = "leaf" if is_leaf else "category"
+        folder_name = f"{folder_prefix}-{new_folder_id[:8]}"
+        
+        print(f"   生成されたフォルダID: {new_folder_id}")
+        print(f"   フォルダ名: {folder_name}")
+        
+        # all_nodesとresultを取得
+        all_nodes = result_manager.get_all_nodes()
+        result_data = result_manager.get_result()
+        
+        if all_nodes is None or result_data is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": "result or all_nodes not found", "data": None}
+            )
+        
+        # 親フォルダの存在を確認
+        if parent_folder_id not in all_nodes:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"message": f"parent folder not found: {parent_folder_id}", "data": None}
+            )
+        
+        # 新しいフォルダノードを作成
+        new_folder_node = {
+            "type": "folder",
+            "id": new_folder_id,
+            "name": folder_name,
+            "parent_id": parent_folder_id,
+            "is_leaf": is_leaf
+        }
+        
+        # all_nodesに追加
+        all_nodes[new_folder_id] = new_folder_node
+        print(f"   📝 all_nodesに追加: {new_folder_id}")
+        
+        # resultに空のデータを追加
+        new_folder_data = {
+            "type": "folder",
+            "name": folder_name,
+            "is_leaf": is_leaf,
+            "data": {}  # 空のフォルダとして作成
+        }
+        
+        # result内で親フォルダを再帰的に探索して追加
+        def add_folder_to_parent_recursive(node: dict, target_parent_id: str) -> bool:
+            """
+            resultを再帰的に探索して親フォルダを見つけ、新しいフォルダを追加する
+            
+            Args:
+                node: 現在のノード
+                target_parent_id: 親フォルダのID
+                
+            Returns:
+                bool: 追加に成功したかどうか
+            """
+            for folder_id, folder_data in node.items():
+                if folder_id == target_parent_id:
+                    # 親フォルダが見つかった
+                    if isinstance(folder_data, dict):
+                        if "data" not in folder_data:
+                            folder_data["data"] = {}
+                        folder_data["data"][new_folder_id] = new_folder_data
+                        print(f"   ✅ 親フォルダ {target_parent_id} に追加しました")
+                        return True
+                elif isinstance(folder_data, dict) and "data" in folder_data and isinstance(folder_data["data"], dict):
+                    # 再帰的に探索
+                    if add_folder_to_parent_recursive(folder_data["data"], target_parent_id):
+                        return True
+            return False
+        
+        # トップレベルから探索
+        if not add_folder_to_parent_recursive(result_data, parent_folder_id):
+            # トップレベルに親がある場合（resultの直下）
+            if parent_folder_id in result_data:
+                parent_data = result_data[parent_folder_id]
+                if "data" not in parent_data:
+                    parent_data["data"] = {}
+                parent_data["data"][new_folder_id] = new_folder_data
+                print(f"   ✅ トップレベルの親フォルダ {parent_folder_id} に追加しました")
+            else:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"message": f"parent folder not found in result: {parent_folder_id}", "data": None}
+                )
+        
+        # 親フォルダを辿ってresult内のデータを更新
+        print(f"   🔄 親フォルダを辿ってresult更新中...")
+        parent_path = result_manager.get_parents(new_folder_id)
+        print(f"   📂 親パス: {parent_path}")
+        
+        # 更新をMongoDBに保存
+        result_manager.update_result(result_data, all_nodes)
+        print(f"   💾 MongoDBに保存完了")
+        
+        print(f"✅ フォルダ作成成功: {folder_name} (ID: {new_folder_id})")
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": "success",
+                "data": {
+                    "folder_id": new_folder_id,
+                    "folder_name": folder_name,
+                    "parent_id": parent_folder_id,
+                    "is_leaf": is_leaf
+                }
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ フォルダ作成エラー: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "message": f"フォルダ作成に失敗しました: {str(e)}",
+                "data": None
+            }
+        )
+
 
 @action_endpoint.delete("/action/folders/{mongo_result_id}", tags=["action"], description="指定されたフォルダを削除")
 async def delete_folders(mongo_result_id: str, sources: List[str] = Query(...)):
@@ -2022,17 +2430,6 @@ async def download_classification_result(
         )
     
     try:
-        # プロジェクト情報とmongo_result_idを取得
-        query_text = f"""
-            SELECT 
-                p.name as project_name,
-                p.original_images_folder_path,
-                pm.mongo_result_id,
-                pm.init_clustering_state
-            FROM projects p
-            JOIN project_memberships pm ON p.id = pm.project_id
-            WHERE p.id = {project_id} AND pm.user_id = {user_id};
-        """
         
         result, _ = action_queries.get_project_info_and_mongo(connect_session, project_id, user_id)
         result_mapping = result.mappings().first()
