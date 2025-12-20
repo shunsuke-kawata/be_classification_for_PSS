@@ -841,6 +841,261 @@ class InitClusteringManager:
         
         return ",".join(top_words)
 
+    def clustering_dummy(
+        self, 
+        sentence_name_db_data: dict[str, list],
+        image_db_data: dict[str, list],
+        clustering_id_dict: dict,
+        sentence_id_dict: dict,
+        image_id_dict: dict,
+        cluster_num: int, 
+        overall_folder_name: str = None,
+        output_folder: bool = False, 
+        output_json: bool = False
+    ):
+        """
+        ダミークラスタリング関数（デバッグ用）
+        引数として渡されたデータを出力する
+        """
+        print(f"\n{'='*80}")
+        print(f"clustering_dummy 呼び出し - 引数データ出力")
+        print(f"{'='*80}\n")
+        
+        print(f"📊 sentence_name_db_data:")
+        print(f"  - ids数: {len(sentence_name_db_data.get('ids', []))}")
+        print(f"  - embeddings数: {len(sentence_name_db_data.get('embeddings', []))}")
+        print(f"  - documents数: {len(sentence_name_db_data.get('documents', []))}")
+        print(f"  - metadatas数: {len(sentence_name_db_data.get('metadatas', []))}")
+        if len(sentence_name_db_data.get('ids', [])) > 0:
+            print(f"  - 最初のid: {sentence_name_db_data['ids'][0]}")
+            if len(sentence_name_db_data.get('metadatas', [])) > 0:
+                metadata = sentence_name_db_data['metadatas'][0]
+                print(f"  - 最初のmetadata.path: {metadata.path if hasattr(metadata, 'path') else metadata.get('path', 'N/A')}")
+        
+        print(f"\n📊 image_db_data:")
+        print(f"  - ids数: {len(image_db_data.get('ids', []))}")
+        print(f"  - embeddings数: {len(image_db_data.get('embeddings', []))}")
+        
+        print(f"\n📊 clustering_id_dict:")
+        print(f"  - 要素数: {len(clustering_id_dict)}")
+        print(f"  - 最初の5件:")
+        for i, (cid, info) in enumerate(list(clustering_id_dict.items())[:5]):
+            print(f"    [{i+1}] {cid}: {info}")
+        
+        print(f"\n📊 sentence_id_dict:")
+        print(f"  - 要素数: {len(sentence_id_dict)}")
+        print(f"  - 最初の5件:")
+        for i, (sid, info) in enumerate(list(sentence_id_dict.items())[:5]):
+            print(f"    [{i+1}] {sid}: {info}")
+        
+        print(f"\n📊 image_id_dict:")
+        print(f"  - 要素数: {len(image_id_dict)}")
+        print(f"  - 最初の5件:")
+        for i, (iid, info) in enumerate(list(image_id_dict.items())[:5]):
+            print(f"    [{i+1}] {iid}: {info}")
+        
+        print(f"\n📊 その他のパラメータ:")
+        print(f"  - cluster_num: {cluster_num}")
+        print(f"  - overall_folder_name: {overall_folder_name}")
+        print(f"  - output_folder: {output_folder}")
+        print(f"  - output_json: {output_json}")
+        
+        print(f"\n{'='*80}")
+        print(f"clustering_dummy 出力終了")
+        print(f"{'='*80}\n")
+        
+        # === ステップ1: 全画像とclustering_idのdictを作成 ===
+        print(f"\n📋 ステップ1: 全画像とclustering_idのdictを作成")
+        print(f"{'='*80}\n")
+        
+        # clustering_idをキー、画像パスを値とする辞書を作成
+        clustering_id_to_path = {}
+        
+        # sentence_idからclustering_idへのマッピングを取得
+        for i, (sentence_id, metadata) in enumerate(zip(sentence_name_db_data.get('ids', []), sentence_name_db_data.get('metadatas', []))):
+            # sentence_id_dictからclustering_idを取得
+            if sentence_id in sentence_id_dict:
+                clustering_id = sentence_id_dict[sentence_id]['clustering_id']
+                path = metadata.path if hasattr(metadata, 'path') else metadata.get('path', 'N/A')
+                clustering_id_to_path[clustering_id] = path
+                print(f"  [{i+1}] clustering_id: {clustering_id}")
+                print(f"       path: {path}")
+        
+        print(f"\n📊 作成完了: {len(clustering_id_to_path)}個のマッピング")
+        print(f"\n辞書の最初の5件:")
+        for i, (cid, path) in enumerate(list(clustering_id_to_path.items())[:5]):
+            print(f"  {i+1}. '{cid}': '{path}'")
+        
+        # 画像ファイル名の接頭辞を抽出してユニーク化
+        print(f"\n🏷️  画像の種類（接頭辞）を抽出:")
+        print(f"{'-'*80}")
+        
+        prefixes = set()
+        for path in clustering_id_to_path.values():
+            # ファイル名を取得
+            import os
+            filename = os.path.basename(path)
+            # アンダースコア(_)で分割して最初の部分を接頭辞として取得
+            if '_' in filename:
+                prefix = filename.split('_')[0]
+                prefixes.add(prefix)
+        
+        # ソートして配列として出力
+        prefix_list = sorted(list(prefixes))
+        print(f"\n接頭辞の配列:")
+        print(f"{prefix_list}")
+        print(f"\n📊 合計: {len(prefix_list)}種類の画像")
+        
+        # === ステップ2: 物体名ごとにリーフフォルダを作成 ===
+        print(f"\n📋 ステップ2: 物体名ごとにリーフフォルダを作成")
+        print(f"{'='*80}\n")
+        
+        leaf_folders = {}
+        
+        for prefix in prefix_list:
+            folder_id = Utils.generate_uuid()
+            folder_data = {}
+            
+            # この接頭辞を持つ全ての画像を収集
+            for clustering_id, path in clustering_id_to_path.items():
+                import os
+                filename = os.path.basename(path)
+                if filename.startswith(prefix + '_'):
+                    folder_data[clustering_id] = path
+            
+            if folder_data:  # データがある場合のみフォルダを作成
+                leaf_folders[folder_id] = {
+                    'data': folder_data,
+                    'is_leaf': True,
+                    'name': prefix
+                }
+                print(f"  📁 [{prefix}] フォルダ作成")
+                print(f"     - folder_id: {folder_id}")
+                print(f"     - 画像数: {len(folder_data)}")
+                print(f"     - is_leaf: True")
+        
+        print(f"\n📊 合計: {len(leaf_folders)}個のリーフフォルダを作成")
+        
+        # リーフフォルダの詳細を出力
+        print(f"\n📦 作成されたリーフフォルダの詳細:")
+        print(f"{'-'*80}")
+        for i, (folder_id, folder_info) in enumerate(leaf_folders.items(), 1):
+            print(f"\n  {i}. フォルダ名: '{folder_info['name']}'")
+            print(f"     folder_id: {folder_id}")
+            print(f"     is_leaf: {folder_info['is_leaf']}")
+            print(f"     画像数: {len(folder_info['data'])}")
+            print(f"     data: {{")
+            for j, (cid, path) in enumerate(list(folder_info['data'].items())[:3], 1):
+                print(f"       '{cid}': '{path}'")
+                if j >= 3 and len(folder_info['data']) > 3:
+                    print(f"       ... ({len(folder_info['data']) - 3}件省略)")
+                    break
+            print(f"     }}")
+        
+        # === ステップ3: 各リーフフォルダをカテゴリフォルダでラッピング ===
+        print(f"\n📋 ステップ3: 各リーフフォルダをカテゴリフォルダでラッピング")
+        print(f"{'='*80}\n")
+        
+        category_folders = {}
+        
+        for leaf_folder_id, leaf_folder_info in leaf_folders.items():
+            # 各リーフフォルダに対してカテゴリフォルダを作成
+            category_folder_id = Utils.generate_uuid()
+            category_name = leaf_folder_info['name']  # リーフと同じ名前を使用
+            
+            category_folders[category_folder_id] = {
+                'data': {
+                    leaf_folder_id: leaf_folder_info
+                },
+                'is_leaf': False,
+                'name': category_name
+            }
+            
+            print(f"  📂 カテゴリフォルダ作成: '{category_name}'")
+            print(f"     - category_folder_id: {category_folder_id}")
+            print(f"     - is_leaf: False")
+            print(f"     - 子フォルダ数: 1")
+            print(f"     - 子フォルダ: {leaf_folder_id} (リーフ)")
+        
+        print(f"\n📊 合計: {len(category_folders)}個のカテゴリフォルダを作成")
+        print(f"📊 総フォルダ数: {len(leaf_folders)} (リーフ) + {len(category_folders)} (カテゴリ) = {len(leaf_folders) + len(category_folders)}個")
+        
+        # 構造の詳細を出力
+        print(f"\n📦 最終的なフォルダ構造:")
+        print(f"{'-'*80}")
+        for i, (cat_folder_id, cat_folder_info) in enumerate(category_folders.items(), 1):
+            print(f"\n  {i}. カテゴリフォルダ: '{cat_folder_info['name']}'")
+            print(f"     - folder_id: {cat_folder_id}")
+            print(f"     - is_leaf: {cat_folder_info['is_leaf']}")
+            print(f"     - 子フォルダ:")
+            for leaf_id, leaf_info in cat_folder_info['data'].items():
+                print(f"       └─ リーフフォルダ: '{leaf_info['name']}'")
+                print(f"          - folder_id: {leaf_id}")
+                print(f"          - is_leaf: {leaf_info['is_leaf']}")
+                print(f"          - 画像数: {len(leaf_info['data'])}")
+        
+        print(f"\n{'='*80}\n")
+        
+        # === ステップ4: トップフォルダでラップしてparent_idを追加 ===
+        print(f"\n📋 ステップ4: トップフォルダでラップ")
+        print(f"{'='*80}\n")
+        
+        top_folder_id = Utils.generate_uuid()
+        display_name = overall_folder_name if overall_folder_name else "ダミー階層分類"
+        
+        wrapped_result = {
+            top_folder_id: {
+                "data": category_folders,
+                "parent_id": None,
+                "is_leaf": False,
+                "name": display_name
+            }
+        }
+        
+        print(f"📦 トップフォルダ作成:")
+        print(f"   - ID: {top_folder_id}")
+        print(f"   - Name: {display_name}")
+        print(f"   - 子フォルダ数: {len(category_folders)}")
+        
+        # parent_idを追加
+        wrapped_result = self._add_parent_ids(wrapped_result)
+        print(f"✅ parent_id追加完了")
+        
+        # === ステップ5: all_nodes生成 ===
+        print(f"\n📋 ステップ5: all_nodes生成")
+        print(f"{'='*80}\n")
+        
+        all_nodes, folder_nodes, file_nodes = self.create_all_nodes(wrapped_result)
+        
+        print(f"✅ all_nodes生成完了:")
+        print(f"   - フォルダノード数: {len(folder_nodes)}")
+        print(f"   - ファイルノード数: {len(file_nodes)}")
+        print(f"   - 合計ノード数: {len(all_nodes)}")
+        
+        print(f"\n📊 想定ノード数:")
+        print(f"   - トップフォルダ: 1")
+        print(f"   - カテゴリフォルダ: {len(category_folders)}")
+        print(f"   - リーフフォルダ: {len(leaf_folders)}")
+        print(f"   - ファイル: {len(clustering_id_to_path)}")
+        print(f"   - 合計想定: {1 + len(category_folders) + len(leaf_folders) + len(clustering_id_to_path)}")
+        
+        result_dict = category_folders
+        
+        print(f"\n📄 wrapped_result の完全な内容:")
+        print(f"{'-'*80}")
+        import json
+        print(json.dumps(wrapped_result, indent=2, ensure_ascii=False, default=str))
+        
+        print(f"\n📄 all_nodes の完全な内容 (最初の10件):")
+        print(f"{'-'*80}")
+        print(json.dumps(all_nodes[:10], indent=2, ensure_ascii=False, default=str))
+        if len(all_nodes) > 10:
+            print(f"\n... 残り {len(all_nodes) - 10} 件省略")
+        
+        print(f"\n{'='*80}\n")
+        
+        return wrapped_result, all_nodes
+
     def clustering(
         self, 
         sentence_name_db_data: dict[str, list],

@@ -508,16 +508,46 @@ def get_image(folder_id: str, name: str):
     if not image_path.is_file():
         return JSONResponse(status_code=400, content={"message": "指定されたパスはファイルではありません", "data": None})
 
-    # MIMEタイプを推定
-    media_type, _ = mimetypes.guess_type(str(image_path))
-    if media_type is None:
-        media_type = "application/octet-stream"
-
-    return FileResponse(
-        path=str(image_path),
-        media_type=media_type,
-        filename=name
-    )
+    try:
+        # 画像を開く
+        img = Image.open(image_path)
+        
+        # RGBAの場合はRGBに変換（JPEGはRGBAをサポートしないため）
+        if img.mode in ('RGBA', 'LA', 'P'):
+            # 透過部分を白背景に変換
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # リサイズ（幅を最大600pxに制限、アスペクト比維持）
+        max_width = 600
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        
+        # メモリ上に圧縮画像を保存
+        img_io = BytesIO()
+        img.save(img_io, format='PNG', quality=1, optimize=True)
+        img_io.seek(0)
+        
+        # 圧縮した画像を返す
+        return Response(
+            content=img_io.getvalue(),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=3600",  # 1時間キャッシュ
+                "Content-Disposition": f"inline; filename={Path(name).stem}.jpg"
+            }
+        )
+        
+    except Exception as e:
+        print(f"画像処理エラー: {e}")
+        return JSONResponse(status_code=500, content={"message": f"画像処理エラー: {str(e)}", "data": None})
 
 # 画像アップロード（画像ファイルとメタデータを受け取り保存）
 @images_endpoint.post('/images', tags=["images"], description="画像をアップロード", responses={
