@@ -235,10 +235,11 @@ def copy_clustering_data(
         # 5. コピー先ユーザーのinit_clustering_stateを2（完了）に更新
         _, _ = action_queries.update_init_state(connect_session, target_user_id, project_id, INIT_CLUSTERING_STATUS.FINISHED)
         
-        # 6. コピー先ユーザーの全画像をクラスタリング済みとしてマーク
-        _, _ = action_queries.mark_user_images_clustered(connect_session, target_user_id, project_id)
+        # 6. コピー元のexecuted_clustering_countをコピー先に反映
+        # clustering_idで画像を紐付けて、コピー元と同じexecuted_clustering_countを設定
+        _, _ = action_queries.copy_clustering_states_by_clustering_id(connect_session, source_user_id, target_user_id, project_id)
         
-        print(f"✅ ユーザー{source_user_id}のデータをユーザー{target_user_id}にコピー完了")
+        print(f"✅ ユーザー{source_user_id}のデータをユーザー{target_user_id}にコピー完了（executed_clustering_countも含む）")
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -753,7 +754,10 @@ def execute_continuous_clustering(
                         'classification_criteria_used': False,
                         'additional_info': {},
                         'feature_analysis': {},
-                        'sibling_folders_info': {}
+                        'sibling_folders_info': {},
+                        'processing_steps': [],  # 処理ステップの記録
+                        'decision_step': None,   # 最終決定ステップ
+                        'decision_reason': None  # 決定理由
                     }
                     
                     # ChromaDBから文章の埋め込みベクトルを取得
@@ -841,6 +845,19 @@ def execute_continuous_clustering(
                     
                     if best_folder_id is None:
                         print(f"    ⚠️ 適切なフォルダが見つかりませんでした")
+                        report_data['errors'].append("適切なフォルダが見つかりませんでした")
+                        report_data['decision_step'] = 'NO_FOLDER_FOUND'
+                        report_data['decision_reason'] = '類似度計算で適切なフォルダが見つかりませんでした'
+                        
+                        # レポート生成
+                        try:
+                            reporter.generate_image_report(report_data)
+                        except Exception as report_e:
+                            print(f"    ⚠️ レポート生成エラー: {report_e}")
+                            traceback.print_exc()
+                        
+                        # レポートデータをリストに追加
+                        all_reports_data.append(report_data)
                         continue
                     
                     print(f"    📊 最高類似度: {max_similarity:.4f} (タイプ: {best_similarity_type})")
@@ -851,6 +868,9 @@ def execute_continuous_clustering(
                     if max_similarity < SIMILARITY_THRESHOLD:
                         print(f"    ⚠️ 最高類似度 {max_similarity:.4f} が閾値 {SIMILARITY_THRESHOLD} を下回っています")
                         print(f"    🆕 新しいリーフフォルダを作成します...")
+                        report_data['processing_steps'].append(f'類似度閾値チェック: {max_similarity:.4f} < {SIMILARITY_THRESHOLD}')
+                        report_data['decision_step'] = 'NEW_FOLDER_CREATION'
+                        report_data['decision_reason'] = f'最高類似度({max_similarity:.4f})が閾値({SIMILARITY_THRESHOLD})を下回ったため新規フォルダを作成'
                         
                         # キャプションから新フォルダ名を生成
                         try:
@@ -933,7 +953,7 @@ def execute_continuous_clustering(
                             print(f"    ❌ フォルダ作成エラー: {create_result.get('error', 'Unknown error')}")
                             print(f"    → 既存のフォルダに配置を試みます")
                             report_data['errors'].append(f"新規フォルダ作成失敗: {create_result.get('error', 'Unknown error')}")
-                            # エラーの場合は既存フォルダへの配置処理に進む
+                            # エラーの場合は既存フォルダへの配置処理に進む（レポートは後で生成）
                     
                     best_folder = next((f for f in leaf_folders if f['id'] == best_folder_id), None)
                     folder_name = best_folder['name'] if best_folder else best_folder_id
@@ -1156,26 +1176,44 @@ def execute_continuous_clustering(
                                         # folder_captions_mapに存在しない場合はデフォルト値を使用
                                         folder_display_name = folder_captions_map.get(target_folder_id, {}).get('folder_name', str(target_folder_id))
                                         
+                                        # 各単語の上位語を取得
+                                        from nltk.corpus import wordnet as wn
+                                        
+                                        unique_words_with_hypernyms = []
+                                        for word, info in top_unique:
+                                            # WordNetから上位語を取得
+                                            hypernym = 'N/A'
+                                            try:
+                                                synsets = wn.synsets(word)
+                                                if synsets:
+                                                    # 最初のsynsetの最も一般的な上位語を取得
+                                                    hypernyms = synsets[0].hypernyms()
+                                                    if hypernyms:
+                                                        # 最初の上位語の名前を取得（.name()から単語部分のみ抽出）
+                                                        hypernym = hypernyms[0].name().split('.')[0]
+                                            except Exception as e:
+                                                print(f"      ⚠️ '{word}'の上位語取得エラー: {e}")
+                                            
+                                            unique_words_with_hypernyms.append({
+                                                'word': word,
+                                                'hypernym': hypernym,
+                                                'score': round(info['score'], 2),
+                                                'score_repr': round(info['score_repr'], 2),
+                                                'score_dist': round(info['score_dist'], 2),
+                                                'tf': round(info['tf'], 4),
+                                                'concentration': round(info['concentration'], 4),
+                                                'consistency': round(info['consistency'], 4),
+                                                'base_idf': round(info['base_idf'], 4),
+                                                'count_in_folder': info['count_in_folder'],
+                                                'num_images_with_word': info['num_images_with_word'],
+                                                'num_folders_with_word': info['num_folders_with_word'],
+                                                'total_count_all_folders': info['total_count_all_folders'],
+                                                'total_images': info['total_images']
+                                            })
+                                        
                                         folder_unique_words[target_folder_id] = {
                                             'folder_name': folder_display_name,
-                                            'unique_words': [
-                                                {
-                                                    'word': word,
-                                                    'score': round(info['score'], 2),
-                                                    'score_repr': round(info['score_repr'], 2),
-                                                    'score_dist': round(info['score_dist'], 2),
-                                                    'tf': round(info['tf'], 4),
-                                                    'concentration': round(info['concentration'], 4),
-                                                    'consistency': round(info['consistency'], 4),
-                                                    'base_idf': round(info['base_idf'], 4),
-                                                    'count_in_folder': info['count_in_folder'],
-                                                    'num_images_with_word': info['num_images_with_word'],
-                                                    'num_folders_with_word': info['num_folders_with_word'],
-                                                    'total_count_all_folders': info['total_count_all_folders'],
-                                                    'total_images': info['total_images']
-                                                }
-                                                for word, info in top_unique
-                                            ]
+                                            'unique_words': unique_words_with_hypernyms
                                         }
                                     
                                     # 各フォルダから上位10個の特徴的単語を取得
@@ -1520,6 +1558,13 @@ def execute_continuous_clustering(
                                             
                                             print(f"\n       ⭐ Step 0: 高スコアマッチ '{best_match['best_word']}' → '{best_match['folder']['name']}'")
                                             
+                                            # 処理ステップを記録
+                                            report_data['processing_steps'].append('Step 0: 高スコア単語による即座のフォルダ決定')
+                                            report_data['decision_step'] = 'STEP_0_HIGH_SCORE_MATCH'
+                                            report_data['decision_reason'] = f"単語'{best_match['best_word']}'が高スコア({best_match['best_score']:.2f})でフォルダ'{best_match['folder']['name']}'にマッチ"
+                                            report_data['matched_word'] = best_match['best_word']
+                                            report_data['matched_score'] = best_match['best_score']
+                                            
                                             # 既存フォルダに挿入
                                             target_folder_id_by_criteria = best_match['folder']['id']
                                         
@@ -1575,6 +1620,8 @@ def execute_continuous_clustering(
                                             category_words_in_caption.sort(key=lambda x: x[1], reverse=True)
                                             
                                             print(f"\n       ⭐ Step 1: {len(category_words_in_caption)}個のカテゴリ単語を抽出")
+                                            report_data['processing_steps'].append(f'Step 1: カテゴリ\'{top_category}\'に属する単語を{len(category_words_in_caption)}個抽出')
+                                            report_data['processing_steps'].append(f'Step 1: カテゴリ\'{top_category}\'に属する単語を{len(category_words_in_caption)}個抽出')
                                             
                                             if len(category_words_in_caption) == 0:
                                                 print(f"       ⚠️ カテゴリ '{top_category}' に属する単語が見つかりませんでした")
@@ -1641,6 +1688,7 @@ def execute_continuous_clustering(
                                                 print(f"\n       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                                                 print(f"       📊 Step 2 結果サマリー:")
                                                 print(f"          🎯 マッチした候補数: {len(folder_candidates)}個")
+                                                report_data['processing_steps'].append(f'Step 2: 既存フォルダとの照合で{len(folder_candidates)}個の候補を発見')
                                                 if len(folder_candidates) > 0:
                                                     print(f"          📋 候補リスト:")
                                                     for idx, candidate in enumerate(sorted(folder_candidates, key=lambda x: x['combined_score'], reverse=True)[:5], 1):
@@ -1680,6 +1728,14 @@ def execute_continuous_clustering(
                                                     
                                                     print(f"\n       ℹ️ 既存フォルダに一致する単語が見つかりませんでした")
                                                     print(f"       🆕 新規フォルダ作成予定: フォルダ名='{new_folder_word}'")
+                                                    
+                                                    report_data['processing_steps'].append('Step 3: 既存フォルダにマッチせず、新規フォルダ作成を決定')
+                                                    report_data['decision_step'] = 'STEP_3_NEW_FOLDER_REQUIRED'
+                                                    report_data['decision_reason'] = f'カテゴリ単語は見つかったが、既存フォルダにマッチせず、\'{new_folder_word}\'で新規フォルダ作成'
+                                                    
+                                                    report_data['processing_steps'].append('Step 3: 既存フォルダにマッチせず、新規フォルダ作成を決定')
+                                                    report_data['decision_step'] = 'STEP_3_NEW_FOLDER_REQUIRED'
+                                                    report_data['decision_reason'] = f'カテゴリ単語は見つかったが、既存フォルダにマッチせず、\'{new_folder_word}\'で新規フォルダ作成'
                                                     
                                                     # 親フォルダIDを取得（best_folderと同じ階層）
                                                     parent_id_for_new = parent_id_of_best if 'parent_id_of_best' in locals() else None
@@ -1978,10 +2034,34 @@ def execute_continuous_clustering(
                             traceback.print_exc()
                     else:
                         print(f"    ❌ 画像挿入エラー: {insert_result.get('error', 'Unknown error')}")
+                        report_data['errors'].append(f"画像挿入エラー: {insert_result.get('error', 'Unknown error')}")
+                        
+                        # レポート生成
+                        try:
+                            reporter.generate_image_report(report_data)
+                        except Exception as report_e:
+                            print(f"    ⚠️ レポート生成エラー: {report_e}")
+                            traceback.print_exc()
+                        
+                        # レポートデータをリストに追加
+                        all_reports_data.append(report_data)
                         
                 except Exception as img_error:
                     print(f"    ❌ 画像処理中にエラー: {img_error}")
                     traceback.print_exc()
+                    
+                    # エラー時でもレポートを生成
+                    if 'report_data' in locals():
+                        report_data['errors'].append(f"画像処理エラー: {str(img_error)}")
+                        
+                        try:
+                            reporter.generate_image_report(report_data)
+                        except Exception as report_e:
+                            print(f"    ⚠️ レポート生成エラー: {report_e}")
+                            traceback.print_exc()
+                        
+                        all_reports_data.append(report_data)
+                    
                     continue
             
             # サマリーレポート生成

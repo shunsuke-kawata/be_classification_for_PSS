@@ -113,7 +113,8 @@ async def process_single_upload(
     project_id: int, 
     uploaded_user_id: int, 
     file: UploadFile,
-    delay: float = 0.0
+    delay: float = 0.0,
+    folder_name: str = None
 ) -> UploadResult:
     """
     単一画像のアップロード処理（非同期）
@@ -125,15 +126,34 @@ async def process_single_upload(
     filename = file.filename
     
     try:
+        # folder_nameのバリデーション
+        if folder_name is not None:
+            if len(folder_name) > 255:
+                return UploadResult(filename, False, "フォルダ名が長すぎます（255文字以内）", error_type="ValidationError", status_code=400)
+        
         # ファイル妥当性チェック
         validation_start = time.time()
         is_valid, validation_message = validate_image_file(file)
         if not is_valid:
+            print(f"\n=== 400 Bad Request: Validation Error ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Validation Message: {validation_message}")
+            print(f"File Size: {getattr(file, 'size', 'unknown')} bytes")
+            print(f"File Extension: {Path(file.filename).suffix.lower()}")
+            print("========================================\n")
             return UploadResult(filename, False, validation_message, error_type="ValidationError", status_code=400)
 
         db_start = time.time()
         connect_session = create_connect_session()
         if connect_session is None:
+            print(f"\n=== 500 Internal Server Error: Database Connection Failed ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Error: データベース接続失敗")
+            print("============================================================\n")
             return UploadResult(filename, False, "データベース接続失敗", error_type="DatabaseConnectionError", status_code=500)
 
         # プロジェクトのoriginal_images_folder_pathを取得
@@ -208,6 +228,15 @@ async def process_single_upload(
 
         if not sentence_name_db_manager or not sentence_usage_db_manager or not sentence_category_db_manager or not image_db_manager:
             # ChromaDB の初期化に失敗している場合はアップロードを中断
+            print(f"\n=== 500 Internal Server Error: ChromaDB Initialization Failed ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"sentence_name_db_manager: {bool(sentence_name_db_manager)}")
+            print(f"sentence_usage_db_manager: {bool(sentence_usage_db_manager)}")
+            print(f"sentence_category_db_manager: {bool(sentence_category_db_manager)}")
+            print(f"image_db_manager: {bool(image_db_manager)}")
+            print("==================================================================\n")
             if save_path.exists():
                 os.remove(save_path)
             return UploadResult(filename, False, "ベクトルDB 初期化失敗", error_type="ChromaDBInitError", status_code=500)
@@ -303,6 +332,15 @@ async def process_single_upload(
                 for future in futures:
                     future.result()
         except Exception as chroma_error:
+            print(f"\n=== 500 Internal Server Error: ChromaDB Insert Failed ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Sentence ID: {sentence_id}")
+            print(f"Image ID: {image_id}")
+            print(f"Error Type: {type(chroma_error).__name__}")
+            print(f"Error Message: {str(chroma_error)}")
+            print("==========================================================\n")
             # ChromaDB挿入失敗時はファイルを削除してロールバック
             if save_path.exists():
                 os.remove(save_path)
@@ -335,10 +373,19 @@ async def process_single_upload(
         # 新しいスキーマに対応：統一sentence_idを保存
         caption_sql_value = 'NULL' if not is_created else f"'{escaped_caption}'"
         mysql_insert_start = time.time()
-        result, _ = insert_image(connect_session, escaped_png_path, is_created_for_sql, caption_sql_value, project_id, clustering_id, sentence_id, image_id, uploaded_user_id)
+        result, _ = insert_image(connect_session, escaped_png_path, is_created_for_sql, caption_sql_value, project_id, clustering_id, sentence_id, image_id, uploaded_user_id, folder_name)
 
         if not result:
             # MySQL挿入失敗時、ファイルとChromaDBをロールバック
+            print(f"\n=== 500 Internal Server Error: MySQL Insert Failed ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Clustering ID: {clustering_id}")
+            print(f"Sentence ID: {sentence_id}")
+            print(f"Image ID: {image_id}")
+            print(f"Error: MySQLに画像情報を挿入できませんでした")
+            print("=======================================================\n")
             if save_path.exists():
                 os.remove(save_path)
             
@@ -362,6 +409,13 @@ async def process_single_upload(
         
         if not mysql_image_id_result:
             # 画像ID取得失敗（既に挿入されているのでロールバックは慎重に）
+            print(f"\n=== 500 Internal Server Error: Image ID Retrieval Failed ===")
+            print(f"Filename: {filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Clustering ID: {clustering_id}")
+            print(f"Error: 挿入したMySQLの画像IDを取得できませんでした")
+            print("=============================================================\n")
             return UploadResult(
                 filename, 
                 False, 
@@ -415,6 +469,15 @@ async def process_single_upload(
         )
 
     except Exception as e:
+        print(f"\n=== 500 Internal Server Error: Unexpected Error ===")
+        print(f"Filename: {filename}")
+        print(f"Project ID: {project_id}")
+        print(f"User ID: {uploaded_user_id}")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Message: {str(e)}")
+        import traceback
+        print(f"Traceback:\n{traceback.format_exc()}")
+        print("======================================================\n")
         return UploadResult(
             filename, 
             False, 
@@ -559,12 +622,13 @@ def get_image(folder_id: str, name: str):
 async def upload_image(
     project_id: int = Form(...),
     uploaded_user_id: int = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    folder_name: str = Form(default=None)
 ):
     """
     単一画像のアップロード（互換性維持のため）
     """
-    result = await process_single_upload(project_id, uploaded_user_id, file)
+    result = await process_single_upload(project_id, uploaded_user_id, file, folder_name=folder_name)
     
     if result.success:
         return JSONResponse(
@@ -581,6 +645,28 @@ async def upload_image(
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         if result.error_type == "ProjectNotFoundError":
             status_code = status.HTTP_404_NOT_FOUND
+        
+        # 400 Bad Requestの場合のみログ出力
+        if status_code == status.HTTP_400_BAD_REQUEST:
+            print(f"\n=== 400 Bad Request: Single Upload Failed ===")
+            print(f"Filename: {file.filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Error Type: {result.error_type}")
+            print(f"Error Message: {result.message}")
+            print(f"Error Data: {result.data}")
+            print("==============================================\n")
+        
+        # 500 Internal Server Errorの場合のみログ出力
+        if status_code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            print(f"\n=== 500 Internal Server Error: Single Upload Failed ===")
+            print(f"Filename: {file.filename}")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Error Type: {result.error_type}")
+            print(f"Error Message: {result.message}")
+            print(f"Error Data: {result.data}")
+            print("=========================================================\n")
         
         return JSONResponse(
             status_code=status_code,
@@ -604,12 +690,14 @@ async def batch_upload_images(
     uploaded_user_id: int = Form(...),
     files: List[UploadFile] = File(...),
     max_concurrent: int = Form(default=3),  # 最大同時実行数
-    upload_delay: float = Form(default=0.1)  # アップロード間隔（秒）
+    upload_delay: float = Form(default=0.1),  # アップロード間隔（秒）
+    folder_names: str = Form(default=None)  # JSON配列の文字列（各ファイルのフォルダ名）
 ):
     """
     複数画像の並列アップロード
     - max_concurrent: 最大同時実行数（デフォルト3）
     - upload_delay: 各アップロード間の遅延時間（デフォルト0.1秒）
+    - folder_names: 各ファイルのフォルダ名のJSON配列（例: '["folder1", "folder2", null]'）
     """
     if not files:
         return JSONResponse(
@@ -623,18 +711,42 @@ async def batch_upload_images(
             content={"message": "一度にアップロードできるファイル数は50個までです", "data": None}
         )
     
+    # folder_namesをパース
+    import json
+    folder_name_list = []
+    if folder_names:
+        try:
+            folder_name_list = json.loads(folder_names)
+            if not isinstance(folder_name_list, list):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"message": "folder_namesは配列形式である必要があります", "data": None}
+                )
+            if len(folder_name_list) != len(files):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"message": f"folder_namesの要素数({len(folder_name_list)})とファイル数({len(files)})が一致しません", "data": None}
+                )
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"message": "folder_namesのJSON形式が不正です", "data": None}
+            )
+    else:
+        folder_name_list = [None] * len(files)
+    
     # セマフォで同時実行数を制限
     semaphore = asyncio.Semaphore(max_concurrent)
     
-    async def limited_upload(file: UploadFile, index: int) -> UploadResult:
+    async def limited_upload(file: UploadFile, index: int, folder_name: str = None) -> UploadResult:
         async with semaphore:
             delay = index * upload_delay  # インデックスに応じて遅延
-            return await process_single_upload(project_id, uploaded_user_id, file, delay)
+            return await process_single_upload(project_id, uploaded_user_id, file, delay, folder_name)
     
     start_time = time.time()
     
     # 並列でアップロード処理を実行
-    tasks = [limited_upload(file, i) for i, file in enumerate(files)]
+    tasks = [limited_upload(file, i, folder_name_list[i]) for i, file in enumerate(files)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # 結果を集計
@@ -712,11 +824,46 @@ async def batch_upload_images(
         response_status_code = status.HTTP_400_BAD_REQUEST
         response_message = f"すべてのアップロードが失敗しました ({failure_count}件)"
         response_success = False
+        
+        # 400 Bad Requestの場合のみ詳細ログ出力
+        print(f"\n=== 400 Bad Request: Batch Upload All Failed ===")
+        print(f"Project ID: {project_id}")
+        print(f"User ID: {uploaded_user_id}")
+        print(f"Total Files: {len(files)}")
+        print(f"Failure Count: {failure_count}")
+        print(f"Conflict Count: {conflict_count}")
+        print(f"Validation Error Count: {validation_error_count}")
+        print(f"Server Error Count: {server_error_count}")
+        print(f"\nFailure Details:")
+        for idx, fail_result in enumerate(failure_results, 1):
+            print(f"  {idx}. {fail_result.get('filename', 'unknown')}")
+            print(f"     Error Type: {fail_result.get('error_type', 'unknown')}")
+            print(f"     Message: {fail_result.get('message', 'unknown')}")
+            print(f"     Status Code: {fail_result.get('status_code', 'unknown')}")
+        print("================================================\n")
     else:
         # 一部成功、一部失敗
         response_status_code = status.HTTP_207_MULTI_STATUS
         response_message = f"バッチアップロード完了: 成功 {success_count}件, 失敗 {failure_count}件"
         response_success = False  # 一部失敗があるため全体としては失敗扱い
+        
+        # 500エラーが含まれる場合のみログ出力
+        if server_error_count > 0:
+            print(f"\n=== 500 Internal Server Error: Batch Upload Partial Server Errors ===")
+            print(f"Project ID: {project_id}")
+            print(f"User ID: {uploaded_user_id}")
+            print(f"Total Files: {len(files)}")
+            print(f"Success Count: {success_count}")
+            print(f"Failure Count: {failure_count}")
+            print(f"Server Error Count: {server_error_count}")
+            print(f"\nServer Error Details:")
+            for idx, fail_result in enumerate(failure_results, 1):
+                if fail_result.get('status_code', 0) >= 500:
+                    print(f"  {idx}. {fail_result.get('filename', 'unknown')}")
+                    print(f"     Error Type: {fail_result.get('error_type', 'unknown')}")
+                    print(f"     Message: {fail_result.get('message', 'unknown')}")
+                    print(f"     Status Code: {fail_result.get('status_code', 'unknown')}")
+            print("===================================================================\n")
     
     return JSONResponse(
         status_code=response_status_code,

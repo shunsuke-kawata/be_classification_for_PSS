@@ -10,14 +10,19 @@ from PIL import Image
 import zipfile
 import tempfile
 
-EXPAMPLE_JSON_PATH = Path('captions_20251120170437.json') #すでに生成されているキャプションのデータ
+# 複数のキャプションJSONファイルを配列として指定可能
+EXPAMPLE_JSON_PATHS = [
+    Path('captions_20250522_013210_converted.json'),  # すでに生成されているキャプションのデータ
+    Path('captions_20251120170437.json'),  # 追加のキャプションデータはここに追加
+    Path('captions_20260114_modified.json')
+]
 
 # キャプションデータをモジュールレベルでキャッシュ（起動時に一度だけ読み込み）
 _caption_cache = None
 _caption_cache_lock = None
 
 def _load_caption_cache():
-    """キャプションデータを一度だけ読み込んでキャッシュ"""
+    """キャプションデータを一度だけ読み込んでキャッシュ（複数ファイル対応）"""
     global _caption_cache, _caption_cache_lock
     if _caption_cache is None:
         from threading import Lock
@@ -25,13 +30,22 @@ def _load_caption_cache():
             _caption_cache_lock = Lock()
         with _caption_cache_lock:
             if _caption_cache is None:  # ダブルチェック
-                try:
-                    with open(EXPAMPLE_JSON_PATH, encoding='utf-8') as f:
-                        _caption_cache = json.load(f)
-                    print(f"✅ キャプションデータをキャッシュしました: {len(_caption_cache)} 件")
-                except Exception as e:
-                    print(f"⚠️ キャプションデータの読み込み失敗: {e}")
-                    _caption_cache = {}
+                _caption_cache = {}
+                total_loaded = 0
+                
+                # 複数のJSONファイルを順番に読み込んで統合
+                for json_path in EXPAMPLE_JSON_PATHS:
+                    try:
+                        with open(json_path, encoding='utf-8') as f:
+                            data = json.load(f)
+                            # 既存のキャッシュにマージ（同じキーがある場合は上書き）
+                            _caption_cache.update(data)
+                            print(f"✅ キャプションデータを読み込みました: {json_path.name} ({len(data)} 件)")
+                            total_loaded += len(data)
+                    except Exception as e:
+                        print(f"⚠️ キャプションデータの読み込み失敗 ({json_path.name}): {e}")
+                
+                print(f"✅ 合計 {len(_caption_cache)} 件のキャプションデータをキャッシュしました")
     return _caption_cache
 
 class Utils:

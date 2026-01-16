@@ -175,6 +175,38 @@ class ContinuousClusteringReporter:
         lines.append(f"  類似度タイプ: {final_similarity_type}")
         lines.append("")
         
+        # 処理ステップと決定情報を追加
+        decision_step = data.get('decision_step', None)
+        decision_reason = data.get('decision_reason', None)
+        processing_steps = data.get('processing_steps', [])
+        
+        if decision_step or decision_reason or processing_steps:
+            lines.append("【処理ステップと決定理由】")
+            
+            if processing_steps:
+                lines.append("  実行された処理ステップ:")
+                for idx, step in enumerate(processing_steps, 1):
+                    lines.append(f"    {idx}. {step}")
+                lines.append("")
+            
+            if decision_step:
+                lines.append(f"  最終決定ステップ: {decision_step}")
+            
+            if decision_reason:
+                lines.append(f"  決定理由: {decision_reason}")
+            
+            # 追加のマッチング情報
+            if data.get('matched_word'):
+                lines.append(f"  マッチした単語: {data.get('matched_word')}")
+            if data.get('matched_score'):
+                lines.append(f"  マッチスコア: {data.get('matched_score'):.2f}")
+            if data.get('tfidf_score'):
+                lines.append(f"  TF-IDFスコア: {data.get('tfidf_score'):.2f}")
+            if data.get('category_score'):
+                lines.append(f"  カテゴリスコア: {data.get('category_score'):.2f}")
+            
+            lines.append("")
+        
         # フォルダ平均との類似度（既存フォルダに追加された場合）
         if 'folder_average_sentence_similarity' in data or 'folder_average_image_similarity' in data:
             lines.append("【フォルダ平均との類似度】")
@@ -230,11 +262,12 @@ class ContinuousClusteringReporter:
                     unique_words = folder_info.get('unique_words', [])
                     
                     lines.append(f"  📁 {folder_name} (ID: {folder_id})")
-                    lines.append(f"     順位 | 単語              | 総合  | 代表性 | 識別性 | TF     | 集中度 | 一貫性 | IDF  ")
-                    lines.append(f"     " + "-" * 95)
+                    lines.append(f"     順位 | 単語              | 上位単語          | 総合  | 代表性 | 識別性 | TF     | 集中度 | 一貫性 | IDF  ")
+                    lines.append(f"     " + "-" * 115)
                     
                     for idx, word_data in enumerate(unique_words[:10], 1):  # 上位10個
                         word = word_data.get('word', '')
+                        hypernym = word_data.get('hypernym', 'N/A')
                         score = float(word_data.get('score', 0.0))
                         score_repr = float(word_data.get('score_repr', 0.0))
                         score_dist = float(word_data.get('score_dist', 0.0))
@@ -243,7 +276,7 @@ class ContinuousClusteringReporter:
                         consistency = float(word_data.get('consistency', 0.0))
                         base_idf = float(word_data.get('base_idf', 0.0))
                         
-                        lines.append(f"     {idx:2d}   | {word:16s} | {score:5.1f} | {score_repr:6.1f} | {score_dist:6.1f} | {tf:6.4f} | {concentration:6.4f} | {consistency:6.4f} | {base_idf:4.2f}")
+                        lines.append(f"     {idx:2d}   | {word:16s} | {hypernym:16s} | {score:5.1f} | {score_repr:6.1f} | {score_dist:6.1f} | {tf:6.4f} | {concentration:6.4f} | {consistency:6.4f} | {base_idf:4.2f}")
                     
                     lines.append("")
                     lines.append(f"     ※ 総合スコア = 0.7 × 代表性 + 0.3 × 識別性")

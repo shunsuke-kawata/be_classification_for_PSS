@@ -53,6 +53,7 @@ CREATE TABLE project_memberships (
 CREATE TABLE images (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(255) NOT NULL,
+    folder_name VARCHAR(255) NULL DEFAULT NULL COMMENT 'アップロード時のフォルダ名（フォルダアップロード時のみ）',
     is_created_caption TINYINT(1) NOT NULL DEFAULT 0,
     caption TEXT,
     project_id INT NOT NULL,
