@@ -12,9 +12,12 @@ import tempfile
 
 # 複数のキャプションJSONファイルを配列として指定可能
 EXPAMPLE_JSON_PATHS = [
-    Path('captions_20250522_013210_converted.json'),  # すでに生成されているキャプションのデータ
-    Path('captions_20251120170437.json'),  # 追加のキャプションデータはここに追加
-    Path('captions_20260114_modified.json')
+    # Path('captions_20250522_013210_converted.json'),  # すでに生成されているキャプションのデータ
+    # Path('captions_20251120170437.json'),  # 追加のキャプションデータはここに追加
+    # Path('captions_20260114_modified.json')
+    
+    Path('captions_20260117_025809.json'),
+    Path('captions_20260117_112640.json')
 ]
 
 # キャプションデータをモジュールレベルでキャッシュ（起動時に一度だけ読み込み）

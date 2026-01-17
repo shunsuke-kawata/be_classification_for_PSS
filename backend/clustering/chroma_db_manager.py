@@ -17,23 +17,36 @@ class ChromaDBManager:
     @staticmethod
     def split_sentence_document(document: str) -> tuple[str, str, str]:
         """
-        文書を3つの部分に分割する
+        文書を7文形式から3つの部分に分割する
+        
+        7文形式:
+        1. The main object is ... (name)
+        2. Its size is ...
+        3. Its weight is ...
+        4. It's used for ... (usage)
+        5. Its material is ...
+        6. Its safety is ...
+        7. Its category is ... (category)
         
         Args:
             document (str): 分割する文書
             
         Returns:
-            tuple[str, str, str]: (名前部分, 用途部分, カテゴリ部分)
+            tuple[str, str, str]: (name部分, usage部分, category部分)
         """
+        # 句点で分割（大文字または文末まで）
         sentences = re.findall(r'.+?\.(?=\s+[A-Z]|$)', document)
         
-        # 3つの文に分割できない場合はデフォルト値を返す
-        if len(sentences) < 3:
-            # 不足分は空文字で埋める
-            while len(sentences) < 3:
-                sentences.append("")
+        # 7文未満の場合は空文字で埋める
+        while len(sentences) < 7:
+            sentences.append("")
         
-        return sentences[0].strip(), sentences[1].strip(), sentences[2].strip()
+        # name: 1文目、usage: 4文目、category: 7文目
+        name_part = sentences[0].strip() if len(sentences) > 0 else ""
+        usage_part = sentences[3].strip() if len(sentences) > 3 else ""
+        category_part = sentences[6].strip() if len(sentences) > 6 else ""
+        
+        return name_part, usage_part, category_part
     
     class ChromaDocument:
         def __init__(self,document:str):

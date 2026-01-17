@@ -97,10 +97,6 @@ def validate_image_file(file: UploadFile) -> tuple[bool, str]:
     if not file.filename:
         return False, "ファイル名が空です"
     
-    # ファイルサイズチェック（例: 10MB制限）
-    if hasattr(file, 'size') and file.size > 10 * 1024 * 1024:
-        return False, "ファイルサイズが10MBを超えています"
-    
     # 拡張子チェック
     allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
     file_ext = Path(file.filename).suffix.lower()

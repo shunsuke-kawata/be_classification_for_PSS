@@ -99,8 +99,8 @@ class ClusteringUtils:
         
 class InitClusteringManager:
     
-    COHESION_THRESHOLD = 0.85  # 凝集度の閾値を0.75→0.85に引き上げ（より厳しく）
-    MERGE_SIMILARITY_THRESHOLD = 0.90  # クラスタ間類似度の閾値を0.85→0.90に引き上げ（より厳しく）
+    COHESION_THRESHOLD = 0.78  # 凝集度の閾値（元の0.85と緩和後の0.70の中間値）
+    MERGE_SIMILARITY_THRESHOLD = 0.83  # クラスタ間類似度の閾値（元の0.90と緩和後の0.75の中間値）
     
     def __init__(self, sentence_name_db: ChromaDBManager, sentence_usage_db: ChromaDBManager, sentence_category_db: ChromaDBManager, image_db: ChromaDBManager, images_folder_path: str, output_base_path: str = './results'):
         def _is_valid_path(path: str) -> bool:
@@ -702,30 +702,33 @@ class InitClusteringManager:
 
     def _get_folder_name(self, captions: list[str], extra_stop_words: list[str]) -> str:
         """
-        TF-IDFを使用してフォルダ名を決定する（上位3語までをカンマで連結）
+        TF-IDFを使用してフォルダ名を決定する（最上位1語を日本語に翻訳）
         """
         if not captions:
             return Utils.generate_uuid()
 
         important_words = ClusteringUtils.get_tfidf_from_documents_array(
             documents=captions,
-            max_words=3,
+            max_words=1,
             extra_stop_words=extra_stop_words
         )
 
         if not important_words:
             return Utils.generate_uuid()
 
-        # 上位語を取り出し、順序を保ったまま重複を除去
-        seen = set()
-        words = []
-        for w, _ in important_words:
-            if w and w not in seen:
-                seen.add(w)
-                words.append(w)
-
-        # 最大3語までカンマで連結
-        name = ",".join(words[:3])
+        # 最上位の単語を取得
+        top_word = important_words[0][0]
+        
+        # 日本語に翻訳
+        try:
+            from deep_translator import GoogleTranslator
+            translator = GoogleTranslator(source='en', target='ja')
+            name = translator.translate(top_word)
+        except Exception as e:
+            print(f"⚠️ 翻訳エラー ({top_word}): {e}")
+            # 翻訳失敗時は元の英単語を使用
+            name = top_word
+        
         return name if name else Utils.generate_uuid()
 
     def _get_folder_name_with_sibling_comparison(
@@ -833,13 +836,23 @@ class InitClusteringManager:
         # スコア順にソート
         sorted_words = sorted(word_scores.items(), key=lambda x: x[1], reverse=True)
         
-        # 上位3単語を取得
-        top_words = [word for word, score in sorted_words[:3]]
-        
-        if not top_words:
+        # 最上位1単語を取得
+        if not sorted_words:
             return Utils.generate_uuid()
         
-        return ",".join(top_words)
+        top_word = sorted_words[0][0]
+        
+        # 日本語に翻訳
+        try:
+            from deep_translator import GoogleTranslator
+            translator = GoogleTranslator(source='en', target='ja')
+            name = translator.translate(top_word)
+        except Exception as e:
+            print(f"⚠️ 翻訳エラー ({top_word}): {e}")
+            # 翻訳失敗時は元の英単語を使用
+            name = top_word
+        
+        return name if name else Utils.generate_uuid()
 
     def clustering_dummy(
         self, 
@@ -1046,9 +1059,9 @@ class InitClusteringManager:
                     break
         
         # ========================================
-        # 第1段階: caption全体でクラスタリング (usage + category)
+        # 第1段階: usage + category でクラスタリング（大カテゴリ分類）
         # ========================================
-        print("\n【第1段階】caption全体でクラスタリング")
+        print("\n【第1段階】usage + category でクラスタリング")
         
         # usage + categoryの埋め込みを取得（2文目と3文目）
         usage_data = self._sentence_usage_db.get_data_by_sentence_ids(sentence_id_dict.keys())
@@ -1060,14 +1073,10 @@ class InitClusteringManager:
             combined = np.concatenate([usage_data['embeddings'][i], category_data['embeddings'][i]])
             combined_embeddings.append(combined)
         
-        # クラスタ数を決定
-        overall_cluster_num, _ = self.get_optimal_cluster_num(
-            embeddings=combined_embeddings, 
-            min_cluster_num=2, 
-            max_cluster_num=min(15, len(sentence_id_dict.keys())//3)
-        )
+        # クラスタ数を5個に固定
+        overall_cluster_num = 5
         
-        print(f"  caption全体クラスタ数: {overall_cluster_num}")
+        print(f"  caption全体クラスタ数: {overall_cluster_num} (固定)")
         
         # クラスタリング実行
         if overall_cluster_num <= 1:
@@ -1092,14 +1101,8 @@ class InitClusteringManager:
                 cluster_indices = np.where(labels == cluster_idx)[0]
                 overall_clusters[cluster_idx] = [usage_data['ids'][i] for i in cluster_indices]
         
-        # 凝集度ベースのマージ
-        print(f"  マージ前クラスタ数: {len(overall_clusters)}")
-        overall_clusters = self._merge_similar_clusters(overall_clusters, combined_embeddings, image_embeddings_dict)
-        print(f"  マージ後クラスタ数: {len(overall_clusters)}")
-        
-        # 要素数1のクラスタを統合
-        overall_clusters = self._merge_singleton_clusters(overall_clusters, image_embeddings_dict)
-        print(f"  シングルトン統合後クラスタ数: {len(overall_clusters)}")
+        # 第1階層は必ず5個で固定（マージ処理なし）
+        print(f"  第1階層クラスタ数: {len(overall_clusters)} (固定、マージなし)")
         
         # ========================================
         # 各caption全体クラスタに対して第2段階・第3段階を実行
@@ -1120,7 +1123,7 @@ class InitClusteringManager:
         for overall_idx, sentence_ids_in_overall in overall_clusters.items():
             overall_folder_id = Utils.generate_uuid()
             
-            # caption全体フォルダ名を兄弟フォルダとの差別化を考慮して決定
+            # usage+categoryフォルダ名を兄弟フォルダとの差別化を考慮して決定
             target_captions = all_overall_captions_by_cluster[overall_idx]
             sibling_captions_list = [captions for idx, captions in all_overall_captions_by_cluster.items() if idx != overall_idx]
             
@@ -1133,36 +1136,32 @@ class InitClusteringManager:
             else:
                 overall_folder_name_tfidf = self._get_folder_name(target_captions, ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES)
             
-            print(f"\n【第2段階】usage+categoryでクラスタリング (全体クラスタ {overall_idx}: {overall_folder_name_tfidf})")
+            print(f"\n【第2段階】nameでクラスタリング (第1段階クラスタ {overall_idx}: {overall_folder_name_tfidf})")
             
             # ========================================
-            # 第2段階: usage + category でクラスタリング
+            # 第2段階: name でクラスタリング
             # ========================================
-            usage_category_data = self._sentence_usage_db.get_data_by_sentence_ids(sentence_ids_in_overall)
-            usage_category_cat_data = self._sentence_category_db.get_data_by_sentence_ids(sentence_ids_in_overall)
+            name_data = self._sentence_name_db.get_data_by_sentence_ids(sentence_ids_in_overall)
             
-            # usage + categoryの埋め込みを結合
-            usage_category_embeddings = []
-            for i in range(len(usage_category_data['embeddings'])):
-                combined = np.concatenate([usage_category_data['embeddings'][i], usage_category_cat_data['embeddings'][i]])
-                usage_category_embeddings.append(combined)
+            # nameの埋め込みを取得
+            name_embeddings = name_data['embeddings']
             
-            usage_category_cluster_num, _ = self.get_optimal_cluster_num(
-                embeddings=usage_category_embeddings, 
+            name_cluster_num, _ = self.get_optimal_cluster_num(
+                embeddings=name_embeddings, 
                 min_cluster_num=2, 
                 max_cluster_num=min(10, len(sentence_ids_in_overall)//2)
             )
             
-            print(f"  usage+categoryクラスタ数: {usage_category_cluster_num}")
+            print(f"  nameクラスタ数: {name_cluster_num}")
             
             # クラスタリング実行
-            if usage_category_cluster_num <= 1:
-                usage_category_clusters = {0: sentence_ids_in_overall}
+            if name_cluster_num <= 1:
+                name_clusters = {0: sentence_ids_in_overall}
             else:
-                embeddings_array = np.array([emb.tolist() if hasattr(emb, 'tolist') else emb for emb in usage_category_embeddings])
+                embeddings_array = np.array([emb.tolist() if hasattr(emb, 'tolist') else emb for emb in name_embeddings])
                 
                 clustering = AgglomerativeClustering(
-                    n_clusters=usage_category_cluster_num,
+                    n_clusters=name_cluster_num,
                     metric='cosine',
                     linkage='average'
                 )
@@ -1171,183 +1170,91 @@ class InitClusteringManager:
                 # シルエットスコアを計算
                 if len(set(labels)) > 1:
                     silhouette_avg = silhouette_score(embeddings_array, labels, metric='cosine')
-                    print(f"  階層型クラスタリング結果: クラスタ数={usage_category_cluster_num}, シルエットスコア={silhouette_avg:.4f}")
+                    print(f"  階層型クラスタリング結果: クラスタ数={name_cluster_num}, シルエットスコア={silhouette_avg:.4f}")
                 
-                usage_category_clusters = {}
-                for cluster_idx in range(usage_category_cluster_num):
+                name_clusters = {}
+                for cluster_idx in range(name_cluster_num):
                     cluster_indices = np.where(labels == cluster_idx)[0]
-                    usage_category_clusters[cluster_idx] = [usage_category_data['ids'][i] for i in cluster_indices]
+                    name_clusters[cluster_idx] = [name_data['ids'][i] for i in cluster_indices]
             
             # 凝集度ベースのマージ
-            print(f"  マージ前クラスタ数: {len(usage_category_clusters)}")
-            usage_category_clusters = self._merge_similar_clusters(usage_category_clusters, usage_category_embeddings, image_embeddings_dict)
-            print(f"  マージ後クラスタ数: {len(usage_category_clusters)}")
+            print(f"  マージ前クラスタ数: {len(name_clusters)}")
+            name_clusters = self._merge_similar_clusters(name_clusters, name_embeddings, image_embeddings_dict)
+            print(f"  マージ後クラスタ数: {len(name_clusters)}")
             
             # 要素数1のクラスタを統合
-            usage_category_clusters = self._merge_singleton_clusters(usage_category_clusters, image_embeddings_dict)
-            print(f"  シングルトン統合後クラスタ数: {len(usage_category_clusters)}")
+            name_clusters = self._merge_singleton_clusters(name_clusters, image_embeddings_dict)
+            print(f"  シングルトン統合後クラスタ数: {len(name_clusters)}")
             
             # ========================================
-            # 各usage+categoryクラスタに対して第3段階を実行
+            # 各nameクラスタをリーフフォルダとして作成
             # ========================================
-            usage_category_result_dict = {}
+            name_result_dict = {}
             
             # 同階層フォルダ比較のため、全クラスタのキャプションを先に収集
-            all_usage_category_clusters_captions = []
-            for usage_category_idx, sentence_ids_in_usage_category in usage_category_clusters.items():
+            all_name_clusters_captions = []
+            for name_idx, sentence_ids_in_name in name_clusters.items():
                 cluster_captions = []
-                for sentence_id in sentence_ids_in_usage_category:
-                    for i, sid in enumerate(usage_category_data['ids']):
+                for sentence_id in sentence_ids_in_name:
+                    for i, sid in enumerate(name_data['ids']):
                         if sid == sentence_id:
-                            cluster_captions.append(f"{usage_category_data['documents'][i].document} {usage_category_cat_data['documents'][i].document}")
+                            cluster_captions.append(name_data['documents'][i].document)
                             break
-                all_usage_category_clusters_captions.append(cluster_captions)
+                all_name_clusters_captions.append(cluster_captions)
             
-            # 各usage+categoryクラスタのフォルダ名を生成・処理
-            for cluster_idx, (usage_category_idx, sentence_ids_in_usage_category) in enumerate(usage_category_clusters.items()):
-                usage_category_folder_id = Utils.generate_uuid()
+            # 各nameクラスタのフォルダ名を生成し、リーフフォルダとして作成
+            for cluster_idx, (name_idx, sentence_ids_in_name) in enumerate(name_clusters.items()):
+                name_folder_id = Utils.generate_uuid()
                 
-                # usage+categoryフォルダ名を決定（同階層の他クラスタと比較）
-                usage_category_captions = all_usage_category_clusters_captions[cluster_idx]
-                sibling_captions = [all_usage_category_clusters_captions[i] for i in range(len(all_usage_category_clusters_captions)) if i != cluster_idx]
+                # nameフォルダ名を決定（同階層の他クラスタと比較）
+                name_captions = all_name_clusters_captions[cluster_idx]
+                sibling_captions = [all_name_clusters_captions[i] for i in range(len(all_name_clusters_captions)) if i != cluster_idx]
                 
                 if len(sibling_captions) > 0:
                     # 同階層フォルダ比較を使用
-                    usage_category_folder_name = self._get_folder_name_with_sibling_comparison(
-                        usage_category_captions,
+                    name_folder_name = self._get_folder_name_with_sibling_comparison(
+                        name_captions,
                         sibling_captions,
-                        ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES
+                        ['object','main','its','the'] + MAJOR_COLORS + MAJOR_SHAPES
                     )
-                    print(f"    📁 usage+categoryフォルダ名生成（同階層比較）: '{usage_category_folder_name}' (ID: {usage_category_folder_id})")
+                    print(f"    📁 リーフフォルダ名生成（同階層比較）: '{name_folder_name}' (ID: {name_folder_id})")
                 else:
                     # 1つしかない場合は通常のTF-IDF
-                    usage_category_folder_name = self._get_folder_name(usage_category_captions, ['object','main','its','used'] + MAJOR_COLORS + MAJOR_SHAPES)
-                    print(f"    📁 usage+categoryフォルダ名生成（TF-IDF）: '{usage_category_folder_name}' (ID: {usage_category_folder_id})")
-                
-                print(f"\n  【第3段階】nameでクラスタリング (usage+categoryクラスタ {usage_category_idx}: {usage_category_folder_name})")
+                    name_folder_name = self._get_folder_name(name_captions, ['object','main','its','the'] + MAJOR_COLORS + MAJOR_SHAPES)
+                    print(f"    📁 リーフフォルダ名生成（TF-IDF）: '{name_folder_name}' (ID: {name_folder_id})")
                 
                 # ========================================
-                # 第3段階: name でクラスタリング
+                # リーフフォルダのデータを作成
                 # ========================================
-                name_data = self._sentence_name_db.get_data_by_sentence_ids(sentence_ids_in_usage_category)
+                leaf_data = {}
                 
-                name_cluster_num, _ = self.get_optimal_cluster_num(
-                    embeddings=name_data['embeddings'], 
-                    min_cluster_num=2, 
-                    max_cluster_num=min(10, len(sentence_ids_in_usage_category)//2)
-                )
-                
-                print(f"    nameクラスタ数: {name_cluster_num}")
-                
-                # クラスタリング実行
-                if name_cluster_num <= 1:
-                    name_clusters = {0: sentence_ids_in_usage_category}
-                else:
-                    embeddings_array = np.array([emb.tolist() if hasattr(emb, 'tolist') else emb for emb in name_data['embeddings']])
-                    
-                    clustering = AgglomerativeClustering(
-                        n_clusters=name_cluster_num,
-                        metric='cosine',
-                        linkage='average'
-                    )
-                    labels = clustering.fit_predict(embeddings_array)
-                    
-                    # シルエットスコアを計算
-                    if len(set(labels)) > 1:
-                        silhouette_avg = silhouette_score(embeddings_array, labels, metric='cosine')
-                        print(f"    階層型クラスタリング結果: クラスタ数={name_cluster_num}, シルエットスコア={silhouette_avg:.4f}")
-                    
-                    name_clusters = {}
-                    for cluster_idx in range(name_cluster_num):
-                        cluster_indices = np.where(labels == cluster_idx)[0]
-                        name_clusters[cluster_idx] = [name_data['ids'][i] for i in cluster_indices]
-                
-                # 凝集度ベースのマージ
-                print(f"    マージ前クラスタ数: {len(name_clusters)}")
-                name_clusters = self._merge_similar_clusters(name_clusters, name_data['embeddings'], image_embeddings_dict)
-                print(f"    マージ後クラスタ数: {len(name_clusters)}")
-                
-                # 要素数1のクラスタを統合
-                name_clusters = self._merge_singleton_clusters(name_clusters, image_embeddings_dict)
-                print(f"    シングルトン統合後クラスタ数: {len(name_clusters)}")
-                
-                # ========================================
-                # リーフノード作成
-                # ========================================
-                name_result_dict = {}
-                
-                # 同階層フォルダ比較のため、全クラスタのキャプションを先に収集
-                all_name_clusters_captions = []
-                for name_idx, sentence_ids_in_name in name_clusters.items():
-                    cluster_captions = []
-                    for sentence_id in sentence_ids_in_name:
+                for sentence_id in sentence_ids_in_name:
+                    if sentence_id in sentence_id_dict:
+                        clustering_id = sentence_id_dict[sentence_id]['clustering_id']
+                        
+                        # metadataを取得
                         for i, sid in enumerate(sentence_name_db_data['ids']):
                             if sid == sentence_id:
-                                cluster_captions.append(sentence_name_db_data['documents'][i].document)
+                                leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
                                 break
-                    all_name_clusters_captions.append(cluster_captions)
                 
-                # 各nameクラスタのフォルダ名を生成
-                for cluster_idx, (name_idx, sentence_ids_in_name) in enumerate(name_clusters.items()):
-                    name_folder_id = Utils.generate_uuid()
-                    
-                    # 対応するclustering_idとファイルパスを取得
-                    leaf_data = {}
-                    leaf_captions = []
-                    
-                    for sentence_id in sentence_ids_in_name:
-                        if sentence_id in sentence_id_dict:
-                            clustering_id = sentence_id_dict[sentence_id]['clustering_id']
-                            
-                            # metadataを取得
-                            for i, sid in enumerate(sentence_name_db_data['ids']):
-                                if sid == sentence_id:
-                                    leaf_data[clustering_id] = sentence_name_db_data['metadatas'][i].path
-                                    leaf_captions.append(sentence_name_db_data['documents'][i].document)
-                                    break
-                    
-                    # nameフォルダ名を決定（同階層の他クラスタと比較）
-                    sibling_captions = [all_name_clusters_captions[i] for i in range(len(all_name_clusters_captions)) if i != cluster_idx]
-                    
-                    if len(sibling_captions) > 0:
-                        # 同階層フォルダ比較を使用（CAPTION_STOPWORDSのみで、色・形状は保持）
-                        name_folder_name = self._get_folder_name_with_sibling_comparison(
-                            leaf_captions, 
-                            sibling_captions, 
-                            []  # 追加のストップワードなし（色・形状を残す）
-                        )
-                        print(f"      📁 nameフォルダ名生成（同階層比較）: '{name_folder_name}' (ID: {name_folder_id})")
-                    else:
-                        # 1つしかない場合は通常のTF-IDF（色・形状を残す）
-                        name_folder_name = self._get_folder_name(leaf_captions, [])
-                        print(f"      📁 nameフォルダ名生成（TF-IDF）: '{name_folder_name}' (ID: {name_folder_id})")
-                    
-                    name_result_dict[name_folder_id] = {
-                        'data': leaf_data,
-                        'is_leaf': True,
-                        'name': name_folder_name
-                    }
-                
-                # 同じ名前のフォルダをまとめる
-                print(f"    🔄 name階層フォルダマージ前: {len(name_result_dict)}個")
-                name_result_dict = self._merge_folders_by_name(name_result_dict)
-                print(f"    ✅ name階層フォルダマージ後: {len(name_result_dict)}個")
-                
-                # usage+categoryフォルダに追加
-                usage_category_result_dict[usage_category_folder_id] = {
-                    'data': name_result_dict,
-                    'is_leaf': False,
-                    'name': usage_category_folder_name
+                # nameクラスタをリーフフォルダとして追加
+                name_result_dict[name_folder_id] = {
+                    'data': leaf_data,
+                    'is_leaf': True,
+                    'name': name_folder_name
                 }
+                
+                print(f"    ✅ リーフフォルダ作成完了: '{name_folder_name}' (画像数: {len(leaf_data)})")
             
             # 同じ名前のフォルダをまとめる
-            print(f"  🔄 usage+category階層フォルダマージ前: {len(usage_category_result_dict)}個")
-            usage_category_result_dict = self._merge_folders_by_name(usage_category_result_dict)
-            print(f"  ✅ usage+category階層フォルダマージ後: {len(usage_category_result_dict)}個")
+            print(f"  🔄 name階層フォルダマージ前: {len(name_result_dict)}個")
+            name_result_dict = self._merge_folders_by_name(name_result_dict)
+            print(f"  ✅ name階層フォルダマージ後: {len(name_result_dict)}個")
             
-            # caption全体フォルダを作成してusage+categoryフォルダをその下に配置
+            # usage+categoryフォルダを作成してnameフォルダをその下に配置
             overall_result_dict[overall_folder_id] = {
-                'data': usage_category_result_dict,
+                'data': name_result_dict,
                 'is_leaf': False,
                 'name': overall_folder_name_tfidf
             }

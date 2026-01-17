@@ -1812,20 +1812,22 @@ def execute_continuous_clustering(
                         print(f"    ⚠️ 同階層フォルダ取得エラー: {sib_e}")
                         traceback.print_exc()
                     
-                    # フォルダ選択がうまくいかなかった場合、フォルダ代表ベクトル（中央値）との類似度でフォルダを決定
-                    if target_folder_id_by_criteria is None and new_image_embedding is not None:
-                        print(f"\n    🔍 フォルダ代表ベクトル（中央値）マッチングを実行...")
+                    # フォルダ選択がうまくいかなかった場合、全ての画像から最も類似したものを探してそのフォルダに挿入
+                    if target_folder_id_by_criteria is None:
+                        print(f"\n    🔍 全画像から最も類似した画像を検索中...")
                         
                         try:
                             # 兄弟フォルダが定義されている場合はそれを使用、なければ全リーフフォルダを使用
                             folders_to_check = sibling_leaf_folders if 'sibling_leaf_folders' in locals() and len(sibling_leaf_folders) > 0 else leaf_folders
                             print(f"       対象フォルダ数: {len(folders_to_check)}個 ({'兄弟フォルダのみ' if 'sibling_leaf_folders' in locals() and len(sibling_leaf_folders) > 0 else '全リーフフォルダ'})")
                             
-                            max_similarity_with_median = -1
+                            max_image_similarity = -1
+                            max_sentence_similarity = -1
                             best_matching_folder_id = None
-                            folder_median_info = {}
+                            best_matching_image_info = {}
+                            all_image_similarities = []
                             
-                            # 各フォルダの画像埋め込みベクトルの中央値を計算
+                            # 各フォルダ内の全画像と比較
                             for folder in folders_to_check:
                                 folder_id = folder['id']
                                 folder_name = folder['name']
@@ -1843,11 +1845,10 @@ def execute_continuous_clustering(
                                     print(f"       ⚠️ フォルダ {folder_name} (ID: {folder_id}) は空です")
                                     continue
                                 
-                                # フォルダ内の全画像の埋め込みベクトルを取得
-                                folder_embeddings = []
+                                # フォルダ内の全画像と比較
                                 for cid in clustering_ids:
                                     try:
-                                        # chromadb_image_idを取得
+                                        # chromadb_image_idとchromadb_sentence_idを取得
                                         img_result, _ = action_queries.get_chromadb_image_id_by_clustering_id(connect_session, cid, project_id)
                                         if not img_result:
                                             continue
@@ -1858,69 +1859,86 @@ def execute_continuous_clustering(
                                         
                                         chromadb_img_id = img_mapping['chromadb_image_id']
                                         
-                                        # ChromaDBから画像埋め込みベクトルを取得
+                                        sent_result, _ = action_queries.get_chromadb_sentence_id_by_clustering_id(connect_session, cid, project_id)
+                                        if not sent_result:
+                                            continue
+                                        
+                                        sent_mapping = sent_result.mappings().first()
+                                        if not sent_mapping:
+                                            continue
+                                        
+                                        chromadb_sent_id = sent_mapping['chromadb_sentence_id']
+                                        
+                                        # ChromaDBから埋め込みベクトルを取得
+                                        existing_sentence_data = sentence_db.get_data_by_ids([chromadb_sent_id])
+                                        existing_sentence_embedding = existing_sentence_data['embeddings'][0]
+                                        
                                         existing_image_data = image_db.get_data_by_ids([chromadb_img_id])
                                         existing_image_embedding = existing_image_data['embeddings'][0]
                                         
-                                        folder_embeddings.append(existing_image_embedding)
+                                        # 文章の類似度を計算
+                                        sentence_similarity = 0.0
+                                        if new_sentence_embedding is not None:
+                                            sentence_similarity = cosine_similarity(
+                                                [new_sentence_embedding],
+                                                [existing_sentence_embedding]
+                                            )[0][0]
+                                        
+                                        # 画像の類似度を計算
+                                        image_similarity = 0.0
+                                        if new_image_embedding is not None:
+                                            image_similarity = cosine_similarity(
+                                                [new_image_embedding],
+                                                [existing_image_embedding]
+                                            )[0][0]
+                                        
+                                        # 記録用
+                                        all_image_similarities.append({
+                                            'folder_id': folder_id,
+                                            'folder_name': folder_name,
+                                            'clustering_id': cid,
+                                            'sentence_similarity': float(sentence_similarity),
+                                            'image_similarity': float(image_similarity)
+                                        })
+                                        
+                                        # 画像類似度で最大値を更新
+                                        if image_similarity > max_image_similarity:
+                                            max_image_similarity = image_similarity
+                                            max_sentence_similarity = sentence_similarity
+                                            best_matching_folder_id = folder_id
+                                            best_matching_image_info = {
+                                                'folder_name': folder_name,
+                                                'clustering_id': cid,
+                                                'sentence_similarity': float(sentence_similarity),
+                                                'image_similarity': float(image_similarity)
+                                            }
                                     
                                     except Exception as embed_e:
                                         continue
-                                
-                                if len(folder_embeddings) == 0:
-                                    print(f"       ⚠️ フォルダ {folder_name} (ID: {folder_id}) の画像埋め込みベクトル取得失敗")
-                                    continue
-                                
-                                # 中央値ベクトルを計算
-                                folder_embeddings_array = np.array(folder_embeddings)
-                                median_vector = np.median(folder_embeddings_array, axis=0)
-                                
-                                print(f"       📊 フォルダ {folder_name} (ID: {folder_id}): {len(folder_embeddings)}個の画像から中央値ベクトル計算完了")
-                                
-                                # 新規画像との類似度を計算
-                                similarity = cosine_similarity(
-                                    [new_image_embedding],
-                                    [median_vector]
-                                )[0][0]
-                                
-                                folder_median_info[folder_id] = {
-                                    'folder_name': folder_name,
-                                    'median_vector': median_vector,
-                                    'num_images': len(folder_embeddings),
-                                    'similarity': float(similarity)
-                                }
-                                
-                                print(f"       類似度: {similarity:.4f}")
-                                
-                                # 最高類似度を更新
-                                if similarity > max_similarity_with_median:
-                                    max_similarity_with_median = similarity
-                                    best_matching_folder_id = folder_id
                             
-                            # 最も類似したフォルダが見つかった場合
+                            # 最も類似した画像が見つかった場合
                             if best_matching_folder_id is not None:
                                 target_folder_id_by_criteria = best_matching_folder_id
-                                best_folder_info = folder_median_info[best_matching_folder_id]
                                 
-                                print(f"\n    ✅ 最も類似したフォルダを発見 (中央値との類似度: {max_similarity_with_median:.4f})")
-                                print(f"       フォルダ: {best_folder_info['folder_name']} (ID: {best_matching_folder_id})")
-                                print(f"       フォルダ内画像数: {best_folder_info['num_images']}個")
+                                print(f"\n    ✅ 最も類似した画像を発見")
+                                print(f"       フォルダ: {best_matching_image_info['folder_name']} (ID: {best_matching_folder_id})")
+                                print(f"       画像ID: {best_matching_image_info['clustering_id']}")
+                                print(f"       画像類似度: {max_image_similarity:.4f}")
+                                print(f"       文章類似度: {max_sentence_similarity:.4f}")
                                 
                                 # レポートデータに記録
-                                report_data['median_vector_matching_used'] = True
-                                report_data['best_matching_similarity_with_median'] = float(max_similarity_with_median)
+                                report_data['most_similar_image_matching_used'] = True
+                                report_data['best_matching_image_similarity'] = float(max_image_similarity)
+                                report_data['best_matching_sentence_similarity'] = float(max_sentence_similarity)
                                 report_data['best_matching_folder_id'] = best_matching_folder_id
-                                report_data['best_matching_folder_name'] = best_folder_info['folder_name']
-                                report_data['best_matching_folder_num_images'] = best_folder_info['num_images']
-                                report_data['folder_median_similarities'] = {
-                                    fid: {'folder_name': info['folder_name'], 'similarity': info['similarity'], 'num_images': info['num_images']}
-                                    for fid, info in folder_median_info.items()
-                                }
+                                report_data['best_matching_folder_name'] = best_matching_image_info['folder_name']
+                                report_data['best_matching_clustering_id'] = best_matching_image_info['clustering_id']
+                                report_data['all_image_similarities'] = all_image_similarities[:100]  # 最大100件まで記録
                             else:
-                                print(f"    ⚠️ 適切なフォルダが見つかりませんでした")
+                                print(f"    ⚠️ 適切な画像が見つかりませんでした")
                         
-                        except Exception as median_matching_e:
-                            print(f"    ⚠️ 中央値ベクトルマッチングエラー: {median_matching_e}")
+                        except Exception as image_matching_e:
+                            print(f"    ⚠️ 類似画像マッチングエラー: {image_matching_e}")
                             traceback.print_exc()
                     
                     # 最終的な挿入先フォルダを決定
