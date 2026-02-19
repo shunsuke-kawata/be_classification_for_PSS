@@ -12,11 +12,13 @@ from routers.systems import systems_endpoint
 from routers.images import images_endpoint
 from routers.test import test_endpoint
 from routers.action import action_endpoint
+from routers.user_image_clustering_states import user_image_clustering_states_endpoint
 import json
 from routers.systems import HTML_TEMPLATE
 import sys
 import os
 from pathlib import Path
+import logging
 
 #CORSの設定
 origins = [
@@ -67,6 +69,7 @@ app.include_router(systems_endpoint)
 app.include_router(images_endpoint)
 app.include_router(test_endpoint)
 app.include_router(action_endpoint)
+app.include_router(user_image_clustering_states_endpoint)
 
 #バックエンドエンドポイントルート
 @app.get("/",tags=["systems"],description="特に使用しない")
@@ -96,5 +99,8 @@ if __name__ == "__main__":
     output_path = Path(DEFAULT_OUTPUT_PATH)
     os.makedirs(images_path, exist_ok=True)
     os.makedirs(output_path, exist_ok=True)
+    
+    # 全てのエンドポイントのアクセスログ(INFO)を非表示
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     
     uvicorn.run("server:app", host="0.0.0.0", port=int(BACKEND_PORT), reload=True)

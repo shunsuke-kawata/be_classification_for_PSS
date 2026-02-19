@@ -19,7 +19,10 @@ services:
     expose:
       - ${FRONTEND_PORT_IN_CONTAINER}
     tty: true
-    
+    depends_on:
+      - be-pss-app
+      - db-pss-app
+      - db-mongo-pss-app
     networks:
       - pss-net
   
@@ -40,6 +43,10 @@ services:
     expose:
       - ${BACKEND_PORT}
     tty: true
+    depends_on:
+      - db-pss-app
+      - db-mongo-pss-app
+    # healthcheck removed; frontend will wait for service availability at startup
     networks:
       - pss-net
   
@@ -68,6 +75,7 @@ services:
       - "${DATABASE_PORT}:${DATABASE_PORT_IN_CONTAINER}"
     expose:
       - ${DATABASE_PORT}
+    # healthcheck removed; frontend will wait for service availability at startup
     networks:
       - pss-net
       
@@ -89,6 +97,7 @@ services:
     volumes:
       - ./database/mongo_data:/data/db
       - ./database/js/initdb.d:/docker-entrypoint-initdb.d
+    # healthcheck removed; frontend will wait for service availability at startup
     networks:
       - pss-net
 

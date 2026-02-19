@@ -41,8 +41,74 @@ DEFAULT_OUTPUT_PATH = os.environ.get('DEFAULT_OUTPUT_PATH', 'output')
 NEXT_PUBLIC_DEFAULT_IMAGE_PATH = os.environ.get('NEXT_PUBLIC_DEFAULT_IMAGE_PATH', '/images')
 
 # クラスタリングステータス定義
-class CLUSTERING_STATUS(IntEnum):
+class INIT_CLUSTERING_STATUS(IntEnum):
     NOT_EXECUTED = 0
     EXECUTING = 1
     FINISHED = 2
     FAILED = 3
+
+class CONTINUOUS_CLUSTERING_STATUS(IntEnum):
+    NOT_EXECUTABLE = 0
+    EXECUTING = 1
+    EXECUTABLE = 2
+
+MAJOR_COLORS = colors = [
+    "red", "blue", "yellow", "green", "orange", "purple", "pink", "brown",
+    "black", "white", "gray", "grey", "cyan", "magenta", "beige", "ivory",
+    "turquoise", "teal", "lime", "olive", "navy", "maroon", "coral",
+    "salmon", "khaki", "violet", "indigo", "gold", "silver", "bronze",
+    "crimson", "plum", "orchid", "lavender", "mint", "aqua", "azure",
+    "chocolate", "tan", "peach", "apricot", "amber", "burgundy",
+    "mustard", "emerald", "jade", "rose", "ruby", "sapphire",
+    "skyblue", "aquamarine", "chartreuse", "fuchsia", "periwinkle",
+    "slate", "charcoal", "sand", "seashell", "honey", "cream",
+    "snow", "wheat", "moccasin", "tomato", "firebrick", "orchid",
+    "lavenderblush", "midnightblue", "royalblue", "steelblue",
+    "dodgerblue", "deepskyblue", "lightblue", "powderblue",
+    "forestgreen", "seagreen", "lightgreen", "darkgreen", "springgreen",
+    "palegreen", "chartreuse", "greenyellow", "lawngreen",
+    "darkolivegreen", "darkslategray", "slategray", "lightgray",
+    "antiquewhite", "bisque", "blanchedalmond", "burlywood",
+    "cornsilk", "linen", "oldlace", "papayawhip", "peachpuff",
+    "tan", "sienna", "peru", "rosybrown"
+]
+
+MAJOR_SHAPES = [
+    "circle", "square", "triangle", "rectangle", "oval", "ellipse", "diamond", "star", "heart",
+    "sphere", "cube", "cone", "cylinder", "pyramid", "prism", "torus",
+    "polygon", "hexagon", "pentagon", "octagon", "line", "curve", "arc", "angle", "edge", "surface",
+    "round", "flat", "straight", "curved", "bent", "twisted", "spiral", "wavy", "irregular",
+    "smooth", "rough", "sharp", "pointed", "blunt",
+    "shape", "form", "figure", "outline", "contour", "pattern", "structure", "silhouette",
+    "geometry", "dimension", "frame", "profile"
+]
+
+# キャプション生成で固定的に出現する除外単語
+# パターン: "The main object is {color and shape} {object name}. It's used for {usage}. Its category is {category}."
+CAPTION_STOPWORDS = [
+    "the", "main", "object", "is", "it", "its", "It's", "used", "for", "category", 
+    "and", "a", "an", "this", "that", "these", "those", 
+    "in", "on", "at", "to", "of", "with", "by", "from", 
+    "as", "are", "was", "were", "be", "been", "being", 
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", 
+    "can", "may", "might", "must", "shall", 
+    "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", 
+    "r", "s", "t", "u", "v", "w", "x", "y", "z", 
+    "very", "too", "so", "just", "only", "always", "never", "often", "seldom", 
+    "up", "down", "over", "under", "out", "or", "but", "nor", "yet"
+]
+
+# 継続的クラスタリング: TF-IDFスコアの閾値設定
+TFIDF_SCORE_THRESHOLDS = {
+    # 高スコア: このフォルダ固有の単語（他フォルダに全く/ほとんど出現しない）
+    # → キャプションに含まれていれば即座にこのフォルダに挿入
+    "high": 1000.0,
+    
+    # 中スコア: このフォルダで特徴的だが他フォルダにも少し出現
+    # → カテゴリマッチングで使用、複数候補がある場合の優先度判定に使用
+    "medium": 100.0,
+    
+    # 低スコア: 一般的な単語（複数フォルダで頻繁に出現）
+    # → カテゴリマッチングの補助として使用、単独では決定打にならない
+    "low": 0.0
+}
