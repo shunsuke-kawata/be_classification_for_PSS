@@ -6,6 +6,7 @@ import traceback
 from pathlib import Path
 from collections import defaultdict
 from typing import List
+from urllib.parse import quote
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, status, Response, BackgroundTasks, Query
@@ -89,12 +90,20 @@ def get_clustering_result(mongo_result_id:str):
     
     if result_data:
         print(f"✅ Found result data for mongo_result_id: {mongo_result_id}")
+        print(f"  - result_data type: {type(result_data)}")
+        print(f"  - result_data is dict: {isinstance(result_data, dict)}")
+        if isinstance(result_data, dict):
+            print(f"  - result_data keys count: {len(result_data)}")
+            print(f"  - result_data keys sample (first 5): {list(result_data.keys())[:5]}")
+        
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={"message": "success", "result": result_data}
         )
     else:
         print(f"❌ Result not found for mongo_result_id: {mongo_result_id}")
+        print(f"  - result_data is None: {result_data is None}")
+        print(f"  - result_data value: {result_data}")
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"message": "Clustering result not found"}
@@ -219,6 +228,15 @@ def copy_clustering_data(
         source_all_nodes = source_result_manager.get_all_nodes()
         source_result_data = source_result_manager.get_result()
         
+        print(f"🔍 コピー元データチェック:")
+        print(f"  - source_mongo_result_id: {source_mongo_result_id}")
+        print(f"  - source_all_nodes is None: {source_all_nodes is None}")
+        print(f"  - source_result_data is None: {source_result_data is None}")
+        if source_all_nodes:
+            print(f"  - source_all_nodes keys count: {len(source_all_nodes)}")
+        if source_result_data:
+            print(f"  - source_result_data keys count: {len(source_result_data)}")
+        
         if source_all_nodes is None or source_result_data is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -226,11 +244,40 @@ def copy_clustering_data(
             )
         
         # 4. コピー先にデータをコピー（ディープコピーで完全に独立したデータを作成）
+        print(f"🔍 コピー先データチェック:")
+        print(f"  - target_mongo_result_id: {target_mongo_result_id}")
+        
         target_result_manager = ResultManager(target_mongo_result_id)
+        
+        # コピー前の既存データを確認
+        existing_all_nodes = target_result_manager.get_all_nodes()
+        existing_result = target_result_manager.get_result()
+        print(f"  - 既存 all_nodes is None: {existing_all_nodes is None}")
+        print(f"  - 既存 result is None: {existing_result is None}")
+        if existing_all_nodes:
+            print(f"  - 既存 all_nodes keys count: {len(existing_all_nodes)}")
+        if existing_result:
+            print(f"  - 既存 result keys count: {len(existing_result)}")
+        
         copied_all_nodes = copy.deepcopy(source_all_nodes)
         copied_result = copy.deepcopy(source_result_data)
         
+        print(f"🔍 ディープコピー後:")
+        print(f"  - copied_all_nodes keys count: {len(copied_all_nodes)}")
+        print(f"  - copied_result keys count: {len(copied_result)}")
+        
         target_result_manager.update_result(copied_result, copied_all_nodes)
+        
+        # コピー後のデータを確認
+        updated_all_nodes = target_result_manager.get_all_nodes()
+        updated_result = target_result_manager.get_result()
+        print(f"🔍 更新後データ確認:")
+        print(f"  - updated_all_nodes is None: {updated_all_nodes is None}")
+        print(f"  - updated_result is None: {updated_result is None}")
+        if updated_all_nodes:
+            print(f"  - updated_all_nodes keys count: {len(updated_all_nodes)}")
+        if updated_result:
+            print(f"  - updated_result keys count: {len(updated_result)}")
         
         # 5. コピー先ユーザーのinit_clustering_stateを2（完了）に更新
         _, _ = action_queries.update_init_state(connect_session, target_user_id, project_id, INIT_CLUSTERING_STATUS.FINISHED)
@@ -2808,13 +2855,16 @@ async def download_classification_result(
             
             print(f"   ZIPファイル作成完了: {zip_path}")
             
+            # ファイル名をURLエンコード（日本語対応）
+            encoded_filename = quote(f"{project_name}.zip")
+            
             # ZIPファイルをダウンロード
             return FileResponse(
                 path=str(zip_path),
                 media_type='application/zip',
                 filename=f"{project_name}.zip",
                 headers={
-                    "Content-Disposition": f'attachment; filename="{project_name}.zip"'
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
                 }
             )
             
